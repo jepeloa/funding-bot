@@ -1,0 +1,68 @@
+[Unit]
+Description=Binance Futures USDT-M Recorder + Strategy Engine
+Documentation=https://github.com/mapplics-ia/websocket_recorder
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=mapplics-ia
+Group=mapplics-ia
+WorkingDirectory=/home/mapplics-ia/websocket_recorder
+ExecStartPre=/usr/bin/docker compose -f /home/mapplics-ia/websocket_recorder/docker-compose.yml up -d --wait
+ExecStart=/home/mapplics-ia/websocket_recorder/.venv/bin/python3 recorder.py
+
+# Watchdog: si el proceso no envía señal de vida en 300s, reiniciar
+WatchdogSec=300
+TimeoutStartSec=120
+
+# ═══════════════════════════════════════════════════════════════
+#  AUTO-RESTART — el corazón de la robustez a nivel de OS
+# ═══════════════════════════════════════════════════════════════
+Restart=always
+RestartSec=5
+
+# ═══════════════════════════════════════════════════════════════
+#  PROTECCIÓN DE MEMORIA — evitar OOM killer
+# ═══════════════════════════════════════════════════════════════
+# OOM score adjustment: -500 hace que el kernel prefiera matar
+# OTROS procesos antes que este. Rango: -1000 (nunca matar) a 1000.
+OOMScoreAdjust=-500
+
+# Límite de memoria: si usa más de 4GB, systemd lo reinicia limpio
+# (mejor que dejar que el OOM killer lo mate sin flush)
+MemoryMax=8G
+MemoryHigh=6G
+
+# ═══════════════════════════════════════════════════════════════
+#  SEÑALES Y TIMEOUTS
+# ═══════════════════════════════════════════════════════════════
+# SIGTERM primero (cierre ordenado), luego SIGKILL si no muere
+KillSignal=SIGTERM
+TimeoutStopSec=60
+FinalKillSignal=SIGKILL
+
+# ═══════════════════════════════════════════════════════════════
+#  LOGGING
+# ═══════════════════════════════════════════════════════════════
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ws-recorder
+
+# ═══════════════════════════════════════════════════════════════
+#  ENTORNO
+# ═══════════════════════════════════════════════════════════════
+EnvironmentFile=/home/mapplics-ia/websocket_recorder/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/mapplics-ia/websocket_recorder/.venv/bin:/home/mapplics-ia/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
+
+# File descriptors y nice
+LimitNOFILE=65536
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

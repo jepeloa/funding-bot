@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: binance-timescaledb
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${DB_NAME:-binance_futures}
+      POSTGRES_USER: ${DB_USER:-recorder}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-recorder}
+
+    ports:
+      - "0.0.0.0:5432:5432"
+
+    volumes:
+      - /media/mapplics-ia/recorder-data/timescaledb:/var/lib/postgresql/data
+
+    # ── Tuning PostgreSQL para i3-10105 / 40GB RAM / HDD 4TB ──
+    command:
+      - "postgres"
+      - "-c" 
+      - "shared_buffers=8GB"
+      - "-c"
+      - "effective_cache_size=28GB"
+      - "-c"
+      - "work_mem=256MB"
+      - "-c"
+      - "maintenance_work_mem=1GB"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "min_wal_size=1GB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "random_page_cost=4"
+      - "-c"
+      - "effective_io_concurrency=2"
+      - "-c"
+      - "max_connections=100"
+      - "-c"
+      - "max_parallel_workers_per_gather=2"
+      - "-c"
+      - "max_parallel_workers=4"
+      - "-c"
+      - "wal_buffers=64MB"
+      - "-c"
+      - "default_statistics_target=200"
+      - "-c"
+      - "log_timezone=UTC"
+      - "-c"
+      - "timezone=UTC"
+      - "-c"
+      - "listen_addresses=*"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-recorder} -d $${POSTGRES_DB:-binance_futures}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 4G
+
+    shm_size: "1g"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ── Caddy reverse proxy (HTTPS self-signed → FastAPI) ──
+  caddy:
+    image: caddy:2-alpine
+    container_name: recorder-caddy
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/certs:/etc/caddy/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

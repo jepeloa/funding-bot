@@ -1,0 +1,30 @@
+# ── Secrets ──
+.env
+*.pem
+caddy/certs/
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── Data / Runtime ──
+*.db
+*.sqlite
+*.sqlite.bak
+*.pid
+*.csv
+strategy_status.json
+
+# ── Editor / IDE ──
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ── OS ──
+.DS_Store
+Thumbs.db

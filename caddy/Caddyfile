@@ -1,0 +1,34 @@
+{
+	auto_https off
+}
+
+:443 {
+	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+
+	# ── Rate limiting headers ──
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# ── Reverse proxy to FastAPI on host ──
+	reverse_proxy host.docker.internal:8008 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		# Timeouts
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}

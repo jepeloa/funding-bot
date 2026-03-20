@@ -1,0 +1,53 @@
+[Unit]
+Description=Binance Futures Recorder — REST API (FastAPI)
+Documentation=https://github.com/mapplics-ia/websocket_recorder
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=mapplics-ia
+Group=mapplics-ia
+WorkingDirectory=/home/mapplics-ia/websocket_recorder
+ExecStart=/home/mapplics-ia/websocket_recorder/.venv/bin/python3 -m uvicorn api:app --host 0.0.0.0 --port 8008 --log-level info
+
+# ═══════════════════════════════════════════════════════════════
+#  AUTO-RESTART
+# ═══════════════════════════════════════════════════════════════
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# ═══════════════════════════════════════════════════════════════
+#  PROTECCIÓN DE MEMORIA
+# ═══════════════════════════════════════════════════════════════
+MemoryMax=2G
+MemoryHigh=1G
+
+# ═══════════════════════════════════════════════════════════════
+#  SEÑALES Y TIMEOUTS
+# ═══════════════════════════════════════════════════════════════
+KillSignal=SIGTERM
+TimeoutStopSec=30
+FinalKillSignal=SIGKILL
+
+# ═══════════════════════════════════════════════════════════════
+#  LOGGING
+# ═══════════════════════════════════════════════════════════════
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ws-recorder-api
+
+# ═══════════════════════════════════════════════════════════════
+#  ENTORNO
+# ═══════════════════════════════════════════════════════════════
+EnvironmentFile=/home/mapplics-ia/websocket_recorder/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/mapplics-ia/websocket_recorder/.venv/bin:/home/mapplics-ia/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

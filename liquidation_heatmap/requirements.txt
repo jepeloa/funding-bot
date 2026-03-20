@@ -1,0 +1,28 @@
+# Liquidation Heatmap Engine — Dependencies
+# Install: pip install -r liquidation_heatmap/requirements.txt
+
+# Core
+numpy>=1.26,<2.0
+Pillow>=10.0
+matplotlib>=3.8
+
+# GPU (CuPy) — install the right variant for your CUDA version.
+# For RTX 3060 Ti with CUDA 13.x / 12.x driver:
+#   pip install cupy-cuda12x
+# Uncomment the one matching your cuda toolkit:
+# cupy-cuda12x>=13.0
+
+# CUDA runtime libraries (required by CuPy if CUDA toolkit not installed)
+nvidia-cuda-nvrtc-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cuda-nvcc-cu12
+
+# Database
+asyncpg>=0.29
+
+# HTTP server
+fastapi>=0.110
+uvicorn>=0.30
+
+# HTTP client (used by main api.py proxy)
+aiohttp>=3.9

@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chart — OI · Funding · Price</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f;
+    color: #c8ccd0;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border-bottom: 1px solid #1e222d;
+    background: #0d0d14;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e0e3eb;
+  }
+  header .badge {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .badge-oi    { background: #1a3a5c; color: #4db8ff; }
+  .badge-fund  { background: #3a1a5c; color: #c084fc; }
+  .badge-price { background: #1a3a2c; color: #4ade80; }
+
+  .controls {
+    padding: 8px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #0d0d14;
+    border-bottom: 1px solid #1e222d;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+  .controls label { color: #888; }
+  .controls select, .controls input {
+    background: #1a1a24;
+    border: 1px solid #2a2a3a;
+    color: #e0e3eb;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .controls button {
+    background: #2962FF;
+    color: #fff;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .controls button:hover { background: #1e53e5; }
+
+  .status {
+    padding: 4px 24px;
+    font-size: 11px;
+    color: #666;
+    background: #0a0a0f;
+    flex-shrink: 0;
+  }
+
+  #charts-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .chart-wrapper {
+    position: relative;
+    min-height: 0;
+  }
+  .chart-wrapper.top    { flex: 3; }
+  .chart-wrapper.bottom { flex: 2; }
+
+  .chart-label {
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    z-index: 10;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+  .label-price { background: rgba(26,58,44,0.8); color: #4ade80; }
+  .label-oi    { background: rgba(26,58,92,0.8); color: #4db8ff; }
+
+  .legend-panel {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    z-index: 10;
+    font-size: 11px;
+    background: rgba(13,13,20,0.85);
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid #1e222d;
+    pointer-events: none;
+    display: flex;
+    gap: 16px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="header-symbol">—</h1>
+  <span class="badge badge-price">Velas</span>
+  <span class="badge badge-oi">Open Interest</span>
+  <span class="badge badge-fund">Funding Rate</span>
+</header>
+
+<div class="controls">
+  <label>Símbolo:</label>
+  <select id="sym-select" style="width: 160px;">
+    <option value="">Cargando…</option>
+  </select>
+
+  <label>Período:</label>
+  <select id="period-select">
+    <option value="1">1 día</option>
+    <option value="3">3 días</option>
+    <option value="7">7 días</option>
+    <option value="14" selected>14 días</option>
+    <option value="30">30 días</option>
+    <option value="60">60 días</option>
+    <option value="90">90 días</option>
+  </select>
+
+  <label>Intervalo:</label>
+  <select id="interval-select">
+    <option value="1m">1m</option>
+    <option value="1h" selected>1h</option>
+    <option value="1d">1d</option>
+  </select>
+
+  <button onclick="loadAll()">Actualizar</button>
+</div>
+
+<div id="charts-container">
+  <!-- Top chart: Price candles only -->
+  <div class="chart-wrapper top" id="price-wrapper">
+    <div class="chart-label label-price">Precio</div>
+    <div class="legend-panel" id="price-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#4ade80"></span> Precio</span>
+    </div>
+    <div id="price-chart" style="width:100%; height:100%;"></div>
+  </div>
+
+  <!-- Bottom chart: OI + Funding (dual Y axis) -->
+  <div class="chart-wrapper bottom" id="oi-wrapper">
+    <div class="chart-label label-oi">Open Interest + Funding</div>
+    <div class="legend-panel" id="oi-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#4db8ff"></span> OI (USDT)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#c084fc"></span> Funding %</span>
+    </div>
+    <div id="oi-chart" style="width:100%; height:100%;"></div>
+  </div>
+</div>
+
+<div class="status" id="status-bar">Cargando datos…</div>
+
+<script>
+const API_KEY = '{{API_KEY}}';
+const BASE = window.location.origin;
+
+function hdrs() {
+  return { 'X-API-Key': API_KEY, 'Accept': 'application/json' };
+}
+
+function isoToUnix(iso) {
+  return Math.floor(new Date(iso).getTime() / 1000);
+}
+
+function formatUSD(v) {
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return v.toFixed(2);
+}
+
+// ─────────────────────────────────────────────────
+//  Chart instances
+// ─────────────────────────────────────────────────
+const baseOpts = () => ({
+  layout: {
+    background: { color: '#0a0a0f' },
+    textColor: '#888',
+    fontSize: 11,
+  },
+  grid: {
+    vertLines: { color: '#1a1a24' },
+    horzLines: { color: '#1a1a24' },
+  },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  timeScale: {
+    timeVisible: true,
+    secondsVisible: false,
+    borderColor: '#1e222d',
+  },
+  rightPriceScale: {
+    borderColor: '#1e222d',
+    scaleMargins: { top: 0.05, bottom: 0.05 },
+  },
+});
+
+// === TOP: Price chart ===
+const priceContainer = document.getElementById('price-chart');
+const priceChart = LightweightCharts.createChart(priceContainer, {
+  ...baseOpts(),
+  autoSize: true,
+});
+
+const candleSeries = priceChart.addCandlestickSeries({
+  upColor: '#26a69a',
+  downColor: '#ef5350',
+  borderUpColor: '#26a69a',
+  borderDownColor: '#ef5350',
+  wickUpColor: '#26a69a',
+  wickDownColor: '#ef5350',
+  priceScaleId: 'right',
+});
+
+// Volume (subtle histogram at the bottom of price chart)
+const volumeSeries = priceChart.addHistogramSeries({
+  priceFormat: { type: 'volume' },
+  priceScaleId: 'vol',
+});
+priceChart.priceScale('vol').applyOptions({
+  scaleMargins: { top: 0.85, bottom: 0 },
+});
+
+// === BOTTOM: OI + Funding chart ===
+const oiContainer = document.getElementById('oi-chart');
+const oiChart = LightweightCharts.createChart(oiContainer, {
+  ...baseOpts(),
+  autoSize: true,
+  rightPriceScale: {
+    borderColor: '#1e222d',
+    scaleMargins: { top: 0.05, bottom: 0.15 },
+  },
+});
+
+// OI area series (right Y-axis)
+const oiAreaSeries = oiChart.addAreaSeries({
+  topColor: 'rgba(77,184,255,0.3)',
+  bottomColor: 'rgba(77,184,255,0.02)',
+  lineColor: '#4db8ff',
+  lineWidth: 2,
+  priceScaleId: 'right',
+  priceFormat: {
+    type: 'custom',
+    formatter: (v) => formatUSD(v),
+  },
+});
+
+oiChart.priceScale('right').applyOptions({
+  scaleMargins: { top: 0.05, bottom: 0.15 },
+});
+
+// Funding line series (left Y-axis)
+const fundingSeries = oiChart.addLineSeries({
+  color: '#c084fc',
+  lineWidth: 2,
+  priceScaleId: 'funding',
+  title: 'Funding %',
+  lastValueVisible: true,
+  priceLineVisible: false,
+});
+
+oiChart.priceScale('funding').applyOptions({
+  position: 'left',
+  borderColor: '#2a2a3a',
+  textColor: '#c084fc',
+  scaleMargins: { top: 0.05, bottom: 0.55 },
+});
+
+// Funding zero reference line
+const fundingZeroSeries = oiChart.addLineSeries({
+  color: 'rgba(192,132,252,0.25)',
+  lineWidth: 1,
+  lineStyle: LightweightCharts.LineStyle.Dashed,
+  priceScaleId: 'funding',
+  lastValueVisible: false,
+  priceLineVisible: false,
+  crosshairMarkerVisible: false,
+});
+
+// ─────────────────────────────────────────────────
+//  Sync time-axes between top & bottom charts
+//  Uses TIME-BASED range (not logical/index) so
+//  charts with different point densities stay aligned
+// ─────────────────────────────────────────────────
+let syncing = false;
+
+priceChart.timeScale().subscribeVisibleLogicalRangeChange(function() {
+  if (syncing) return;
+  var range = priceChart.timeScale().getVisibleRange();
+  if (!range) return;
+  syncing = true;
+  try { oiChart.timeScale().setVisibleRange(range); } catch(e) {}
+  syncing = false;
+});
+
+oiChart.timeScale().subscribeVisibleLogicalRangeChange(function() {
+  if (syncing) return;
+  var range = oiChart.timeScale().getVisibleRange();
+  if (!range) return;
+  syncing = true;
+  try { priceChart.timeScale().setVisibleRange(range); } catch(e) {}
+  syncing = false;
+});
+
+// ─────────────────────────────────────────────────
+//  Load symbols list
+// ─────────────────────────────────────────────────
+async function loadSymbols() {
+  try {
+    const url = new URL(BASE + '/symbols');
+    const r = await fetch(url, { headers: hdrs() });
+    if (!r.ok) throw new Error(r.statusText);
+    const symbols = await r.json();
+
+    const sel = document.getElementById('sym-select');
+    sel.innerHTML = '';
+
+    symbols.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      sel.appendChild(opt);
+    });
+
+    // Try to pre-select from URL hash or default to first
+    const hash = window.location.hash.replace('#', '').toUpperCase();
+    if (hash && symbols.includes(hash)) {
+      sel.value = hash;
+    } else if (symbols.includes('BTCUSDT')) {
+      sel.value = 'BTCUSDT';
+    } else if (symbols.length) {
+      sel.value = symbols[0];
+    }
+  } catch (err) {
+    console.error('Failed to load symbols:', err);
+    const sel = document.getElementById('sym-select');
+    sel.innerHTML = '<option value="BTCUSDT">BTCUSDT</option>';
+  }
+}
+
+// Reload chart when symbol changes
+document.getElementById('sym-select').addEventListener('change', () => {
+  const sym = document.getElementById('sym-select').value;
+  window.location.hash = sym;
+  loadAll();
+});
+
+// ─────────────────────────────────────────────────
+//  Data helpers
+// ─────────────────────────────────────────────────
+
+async function fetchJSON(path, params) {
+  const url = new URL(BASE + path);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, v);
+  }
+  const r = await fetch(url, { headers: hdrs() });
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+  return r.json();
+}
+
+/** Deduplicate by time keeping last value */
+function dedup(arr) {
+  const out = [];
+  for (const p of arr) {
+    if (out.length > 0 && out[out.length - 1].time === p.time) {
+      out[out.length - 1] = p;
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Down-sample to at most ~maxPts */
+function downsample(arr, maxPts) {
+  if (arr.length <= maxPts || arr.length < 3) return arr;
+  var tMin = arr[0].time;
+  var tMax = arr[arr.length - 1].time;
+  var step = Math.ceil((tMax - tMin) / maxPts);
+  var out = [];
+  var nextTs = 0;
+  for (var i = 0; i < arr.length; i++) {
+    if (arr[i].time >= nextTs) {
+      out.push(arr[i]);
+      nextTs = arr[i].time + step;
+    }
+  }
+  return out;
+}
+
+/**
+ * Snap an array of {time, value} points onto a regular time grid.
+ * For each bucket, keep the last value seen.  This ensures the OI
+ * series and the candle series share the exact same timestamps,
+ * which makes zoom/pan sync work perfectly.
+ */
+function snapToGrid(pts, stepSec, tMin, tMax) {
+  if (!pts.length) return [];
+  // Build a map: bucket → last value
+  var buckets = {};
+  for (var i = 0; i < pts.length; i++) {
+    var bk = Math.floor(pts[i].time / stepSec) * stepSec;
+    buckets[bk] = pts[i].value;
+  }
+  // Walk the grid and forward-fill gaps
+  var out = [];
+  var lastVal = null;
+  for (var t = Math.floor(tMin / stepSec) * stepSec; t <= tMax; t += stepSec) {
+    if (buckets[t] !== undefined) lastVal = buckets[t];
+    if (lastVal !== null) out.push({ time: t, value: lastVal });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────
+//  Main data loader
+// ─────────────────────────────────────────────────
+async function loadAll() {
+  const sym = document.getElementById('sym-select').value || 'BTCUSDT';
+  const days = parseInt(document.getElementById('period-select').value);
+  const interval = document.getElementById('interval-select').value;
+  const start = new Date(Date.now() - days * 86400000).toISOString();
+  const statusEl = document.getElementById('status-bar');
+
+  document.getElementById('header-symbol').textContent = sym;
+  document.title = sym + ' — OI · Funding · Price';
+  statusEl.textContent = 'Cargando ' + sym + ' — últimos ' + days + ' día(s)…';
+
+  try {
+    // Fetch all three datasets in parallel
+    const [ohlcvData, oiData, fundData] = await Promise.all([
+      fetchJSON('/ohlcv/' + sym, { interval: interval, limit: 10000, start: start }),
+      fetchJSON('/oi/' + sym,    { limit: 10000, start: start }),
+      fetchJSON('/funding/' + sym, { limit: 10000, start: start }),
+    ]);
+
+    // ── Process OHLCV ──
+    const candles = ohlcvData
+      .map(function(d) {
+        return {
+          time: isoToUnix(d.time),
+          open: d.open, high: d.high, low: d.low, close: d.close,
+          volume_usdt: d.volume_usdt || d.volume,
+        };
+      })
+      .sort(function(a, b) { return a.time - b.time; });
+
+    // ── Compute candle time grid ──
+    var intervalSec = { '1m': 60, '1h': 3600, '1d': 86400 }[interval] || 3600;
+    var gridMin = candles.length ? candles[0].time : Math.floor(Date.now() / 1000) - days * 86400;
+    var gridMax = candles.length ? candles[candles.length - 1].time : Math.floor(Date.now() / 1000);
+
+    // ── Process OI — snap to candle grid ──
+    var oiRaw = oiData
+      .map(function(d) { return { time: isoToUnix(d.time), value: d.value }; })
+      .sort(function(a, b) { return a.time - b.time; });
+    oiRaw = dedup(oiRaw);
+    var oiPts = snapToGrid(oiRaw, intervalSec, gridMin, gridMax);
+
+    // ── Process Funding — snap to candle grid ──
+    var fundRaw = fundData
+      .map(function(d) { return { time: isoToUnix(d.time), value: d.funding_rate * 100 }; })
+      .sort(function(a, b) { return a.time - b.time; });
+    fundRaw = dedup(fundRaw);
+    var fundPts = snapToGrid(fundRaw, intervalSec, gridMin, gridMax);
+
+    // ── Set data on PRICE chart (top) ──
+    candleSeries.setData(candles.map(function(c) {
+      return { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+    }));
+
+    volumeSeries.setData(candles.map(function(c) {
+      return {
+        time: c.time,
+        value: c.volume_usdt,
+        color: c.close >= c.open ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)',
+      };
+    }));
+
+    // ── Set data on OI+Funding chart (bottom) ──
+    oiAreaSeries.setData(oiPts);
+    fundingSeries.setData(fundPts);
+
+    // Funding zero reference line spanning entire grid range
+    if (gridMin !== null) {
+      fundingZeroSeries.setData([
+        { time: gridMin, value: 0 },
+        { time: gridMax, value: 0 },
+      ]);
+    }
+
+    // ── Fit both charts to same TIME range ──
+    var timeFrom = gridMin;
+    var timeTo   = gridMax;
+    // Extend OI/fund bounds if they go beyond candles
+    if (oiPts.length) {
+      timeFrom = Math.min(timeFrom, oiPts[0].time);
+      timeTo   = Math.max(timeTo,   oiPts[oiPts.length - 1].time);
+    }
+    if (fundPts.length) {
+      timeFrom = Math.min(timeFrom, fundPts[0].time);
+      timeTo   = Math.max(timeTo,   fundPts[fundPts.length - 1].time);
+    }
+
+    var visRange = { from: timeFrom, to: timeTo };
+    priceChart.timeScale().setVisibleRange(visRange);
+    oiChart.timeScale().setVisibleRange(visRange);
+
+    // ── Status bar ──
+    var oiMin = oiPts.length ? Math.min.apply(null, oiPts.map(function(d){ return d.value; })) : 0;
+    var oiMax = oiPts.length ? Math.max.apply(null, oiPts.map(function(d){ return d.value; })) : 0;
+    var fundMin = fundPts.length ? Math.min.apply(null, fundPts.map(function(d){ return d.value; })) : 0;
+    var fundMax = fundPts.length ? Math.max.apply(null, fundPts.map(function(d){ return d.value; })) : 0;
+    var lastPrice = candles.length ? candles[candles.length - 1].close : 0;
+
+    statusEl.textContent =
+      sym + ' | Precio: $' + lastPrice.toFixed(4) + ' | ' +
+      'OI: ' + formatUSD(oiMin) + ' — ' + formatUSD(oiMax) + ' | ' +
+      'Funding: ' + fundMin.toFixed(4) + '% — ' + fundMax.toFixed(4) + '% | ' +
+      'Velas: ' + candles.length + ' | OI pts: ' + oiPts.length + ' | Fund pts: ' + fundPts.length;
+
+  } catch (err) {
+    statusEl.textContent = '❌ Error: ' + err.message;
+    console.error(err);
+  }
+}
+
+// ─────────────────────────────────────────────────
+//  Init
+// ─────────────────────────────────────────────────
+(async function() {
+  await loadSymbols();
+  loadAll();
+})();
+</script>
+</body>
+</html>
