@@ -87,6 +87,10 @@ class VariantTradeState:
     # Live trading attrs (None/0 en dry-run)
     binance_order_id: Optional[int] = None
     live_qty: float = 0.0
+    # Partial TP tracking (MAX exit scheme)
+    partial_tp_taken: bool = False
+    original_qty: float = 0.0   # qty antes del cierre parcial
+    partial_tp_pnl_usd: float = 0.0  # PnL realizado del TP parcial
 
 
 class SymbolState:
@@ -1014,6 +1018,8 @@ class StrategyEngine:
         vtrade.trade_mode = trade_mode
         vtrade.binance_order_id = binance_order_id
         vtrade.live_qty = actual_qty
+        vtrade.partial_tp_taken = False
+        vtrade.original_qty = actual_qty
 
         mode_tag = trade_mode.upper()
         log.warning(
@@ -1078,6 +1084,37 @@ class StrategyEngine:
 
         exit_reason = None
 
+        # ── MAX exit scheme: Early Abort ──
+        # Si después de N horas el MFE nunca superó un umbral mínimo
+        # y el trade va en pérdida, salir antes de tocar el SL.
+        ea_hours = vparams.get("early_abort_hours", 0)
+        ea_max_mfe = vparams.get("early_abort_max_mfe", 0)
+        ea_max_loss = vparams.get("early_abort_max_loss", 0)
+        if (ea_hours > 0
+              and hold_hours > ea_hours
+              and vtrade.mfe < ea_max_mfe
+              and pnl_pct < ea_max_loss):
+            exit_reason = "early_abort"
+
+        # ── MAX exit scheme: Partial TP + Profit Lock ──
+        # Cuando MFE llega al umbral, cerrar fracción de la posición.
+        # Después, el resto tiene un floor de profit (profit_lock_pct).
+        pt_mfe = vparams.get("partial_tp_mfe_pct", 0)
+        pt_frac = vparams.get("partial_tp_fraction", 0)
+        p_lock = vparams.get("profit_lock_pct", 0)
+
+        if not exit_reason and pt_mfe > 0 and pt_frac > 0 and not vtrade.partial_tp_taken:
+            if vtrade.mfe >= pt_mfe:
+                # Tomar TP parcial ahora
+                await self._partial_close_trade(
+                    state, vtrade, vname, vparams, now, price, pt_frac,
+                )
+
+        # Profit lock: si ya se tomó parcial y pnl cayó bajo el floor, salir
+        if not exit_reason and vtrade.partial_tp_taken and p_lock > 0:
+            if pnl_pct <= p_lock:
+                exit_reason = "profit_lock"
+
         # ── Trailing continuo con floor dinámico ──
         # Reemplaza la lógica binaria breakeven/trailing por una rampa continua.
         # Paper §2.4 exits (i)-(v) no incluyen breakeven; este mecanismo es
@@ -1141,6 +1178,79 @@ class StrategyEngine:
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
 
+    async def _partial_close_trade(self, state: SymbolState,
+                                   vtrade: VariantTradeState,
+                                   vname: str, vparams: dict,
+                                   now: float, price: float,
+                                   fraction: float):
+        """
+        Cierra una fracción de la posición (TP parcial).
+        En live: cierre parcial en Binance.
+        En paper: solo actualiza notional tracking.
+        """
+        if vtrade.partial_tp_taken:
+            return  # ya se tomó
+
+        close_qty = vtrade.live_qty * fraction if vtrade.live_qty > 0 else 0
+        actual_price = price
+        partial_notional = vtrade.entry_notional * fraction
+
+        # ── LIVE: cierre parcial en Binance ──
+        if vtrade.trade_mode == "live" and self.trader and close_qty > 0:
+            try:
+                # Cancelar TP/SL existentes (se van a recalcular con qty reducida)
+                await self.trader.cancel_all_orders(state.symbol)
+                result = await self.trader.close_position(
+                    symbol=state.symbol,
+                    quantity=close_qty,
+                )
+                avg_px = result.get("avgPrice", 0)
+                if avg_px and float(avg_px) > 0:
+                    actual_price = float(avg_px)
+                vtrade.original_qty = vtrade.live_qty
+                vtrade.live_qty = vtrade.live_qty - close_qty
+                log.warning(
+                    f"📐 [{vname.upper()}] PARTIAL TP {fraction:.0%} FILLED "
+                    f"| {state.symbol} | closed {close_qty:.4f} @ ${actual_price:.6f} "
+                    f"| remaining qty={vtrade.live_qty:.4f}"
+                )
+            except Exception as e:
+                log.error(
+                    f"❌ [{vname.upper()}] PARTIAL TP FAILED | "
+                    f"{state.symbol} | {e}"
+                )
+                return  # no marcar como tomado si falló
+
+        # Calcular PnL parcial realizado
+        partial_pnl_pct = (vtrade.entry_price - actual_price) / vtrade.entry_price
+        partial_pnl_usd = partial_pnl_pct * partial_notional
+        partial_fees = 2 * TAKER_FEE * partial_notional  # entry + exit fees for this portion
+
+        # Actualizar notional restante y PnL parcial realizado
+        vtrade.entry_notional -= partial_notional
+        vtrade.partial_tp_taken = True
+        vtrade.partial_tp_pnl_usd = partial_pnl_usd - partial_fees
+        if vtrade.original_qty == 0:
+            vtrade.original_qty = vtrade.live_qty / (1 - fraction) if vtrade.live_qty > 0 else 0
+
+        tmode = vtrade.trade_mode.upper()
+        log.warning(
+            f"📐 [{vname.upper()}][{tmode}] PARTIAL TP {fraction:.0%} | {state.symbol} "
+            f"| PnL parcial={partial_pnl_pct:+.2%} ${partial_pnl_usd:+.2f} "
+            f"| notional restante=${vtrade.entry_notional:,.0f}"
+        )
+
+        # Telegram notification
+        if self.telegram:
+            try:
+                await self.telegram.send_message(
+                    f"📐 *PARTIAL TP {fraction:.0%}* | {state.symbol} [{vname.upper()}]\n"
+                    f"PnL parcial: {partial_pnl_pct:+.2%} (${partial_pnl_usd:+.2f})\n"
+                    f"Remaining: ${vtrade.entry_notional:,.0f}",
+                )
+            except Exception:
+                pass
+
     async def _close_trade(self, state: SymbolState,
                            vtrade: VariantTradeState,
                            vname: str, vparams: dict, now: float,
@@ -1186,6 +1296,10 @@ class StrategyEngine:
         # PnL con leverage
         pnl_leveraged = pnl_pct * vparams["leverage"]
         pnl_usd = pnl_pct * notional + vtrade.funding_collected - fees
+
+        # Si hubo TP parcial, sumar el PnL realizado de la porción cerrada
+        if vtrade.partial_tp_taken:
+            pnl_usd += vtrade.partial_tp_pnl_usd
 
         hold_hours = (now - vtrade.entry_time) / 3600.0
 
@@ -1268,6 +1382,9 @@ class StrategyEngine:
         vtrade.trade_mode = "paper"
         vtrade.binance_order_id = None
         vtrade.live_qty = 0.0
+        vtrade.partial_tp_taken = False
+        vtrade.original_qty = 0.0
+        vtrade.partial_tp_pnl_usd = 0.0
 
         # NO resetear energy — se disipa naturalmente cuando el score baja
         # (la energía es estado de mercado compartido, no de un trade)
@@ -1315,6 +1432,23 @@ class StrategyEngine:
                     positions = await self.trader.get_positions(sym)
                     if positions:
                         vtrade.live_qty = positions[0]["position_amt"]
+                        # Detectar si partial TP ya fue tomado:
+                        # Si la posición actual es menor que la esperada por el notional,
+                        # es que ya se cerró una fracción.
+                        vparams = VARIANTS.get(variant, {})
+                        expected_notional = t.get("position_size", 0.0) or 0.0
+                        if expected_notional > 0 and vtrade.entry_price > 0:
+                            expected_qty = expected_notional / vtrade.entry_price
+                            pt_frac = vparams.get("partial_tp_fraction", 0)
+                            if pt_frac > 0 and vtrade.live_qty < expected_qty * (1 - pt_frac / 2):
+                                vtrade.partial_tp_taken = True
+                                vtrade.original_qty = expected_qty
+                                vtrade.entry_notional = expected_notional * (1 - pt_frac)
+                                log.info(
+                                    f"📐 [{variant}] Partial TP detectado en restore "
+                                    f"| {sym} | qty actual={vtrade.live_qty:.4f} "
+                                    f"vs esperada={expected_qty:.4f}"
+                                )
                 except Exception as e:
                     log.warning(f"\u26a0\ufe0f No se pudo restaurar live_qty #{t['id']}: {e}")
             tmode = vtrade.trade_mode.upper()

@@ -67,6 +67,8 @@
   .trade-item .reason { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
   .trade-item .reason.bug { background: rgba(248,81,73,0.15); color: var(--red); }
   .trade-item .reason.ok { background: rgba(63,185,80,0.15); color: var(--green); }
+  .trade-item .reason.warn { background: rgba(251,146,60,0.15); color: var(--orange); }
+  .trade-item .reason.loss { background: rgba(248,81,73,0.15); color: var(--red); }
   .trade-item .reason.restart { background: rgba(210,153,34,0.15); color: var(--yellow); }
 
   /* ── Filter bar ── */
@@ -377,8 +379,10 @@ function renderTradeList(trades) {
 
     const isBug = (t.exit_reason || '').startsWith('bug_');
     const isRestart = t.exit_reason === 'service_restart';
+    const isLoss = ['stop_loss','oi_abort'].includes(t.exit_reason);
+    const isWarn = ['early_abort','breakeven_stop','max_hold'].includes(t.exit_reason);
     const isOpen = t.status === 'open';
-    const reasonClass = isBug ? 'bug' : (isRestart ? 'restart' : 'ok');
+    const reasonClass = isBug ? 'bug' : isRestart ? 'restart' : isLoss ? 'loss' : isWarn ? 'warn' : 'ok';
     const reasonLabel = isOpen ? 'OPEN' : (t.exit_reason || '—').replace(/_/g, ' ');
 
     const entryDate = new Date(t.entry_time * 1000);

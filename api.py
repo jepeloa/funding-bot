@@ -1079,6 +1079,57 @@ async def trade_exit_signals():
                 "detail": f"hold={'✓' if rev_conditions[0] else '✗'} PnL={'✓' if rev_conditions[1] else '✗'} dOI={'✓' if rev_conditions[2] else '✗'} η={'✓' if rev_conditions[3] else '✗'}",
             })
 
+            # 9. Partial TP (MAX scheme)
+            pt_mfe = vparams.get("partial_tp_mfe_pct", 0)
+            pt_frac = vparams.get("partial_tp_fraction", 0)
+            if pt_mfe > 0:
+                pt_progress = min(mfe / pt_mfe * 100, 100)
+                signals.append({
+                    "name": "Partial TP",
+                    "icon": "✂️",
+                    "threshold": f"{pt_frac*100:.0f}% @ MFE≥{pt_mfe*100:.1f}%",
+                    "current": f"MFE={mfe*100:.2f}%",
+                    "progress": pt_progress,
+                    "triggered": mfe >= pt_mfe,
+                    "detail": f"Cierra {pt_frac*100:.0f}% cuando MFE alcance {pt_mfe*100:.1f}%",
+                })
+
+            # 10. Profit Lock (post partial TP)
+            p_lock = vparams.get("profit_lock_pct", 0)
+            if p_lock > 0 and pt_mfe > 0:
+                lock_active = mfe >= pt_mfe  # partial TP already triggered
+                if lock_active:
+                    lock_progress = min(max((p_lock - pnl_pct) / p_lock * 100, 0), 100) if p_lock > 0 else 0
+                else:
+                    lock_progress = 0
+                signals.append({
+                    "name": "Profit Lock",
+                    "icon": "🔒",
+                    "threshold": f"Floor +{p_lock*100:.1f}%",
+                    "current": f"PnL={pnl_pct*100:.2f}%",
+                    "progress": lock_progress,
+                    "triggered": lock_active and pnl_pct <= p_lock,
+                    "detail": f"{'Activo' if lock_active else 'Inactivo'} — cierra si PnL ≤ +{p_lock*100:.1f}%",
+                })
+
+            # 11. Early Abort (MAX scheme)
+            ea_hours = vparams.get("early_abort_hours", 0)
+            ea_mfe = vparams.get("early_abort_max_mfe", 0)
+            ea_loss = vparams.get("early_abort_max_loss", 0)
+            if ea_hours > 0:
+                ea_time_pct = min(hold_hours / ea_hours * 100, 100)
+                ea_conds = [hold_hours > ea_hours, mfe < ea_mfe, pnl_pct < ea_loss]
+                ea_met = sum(ea_conds)
+                signals.append({
+                    "name": "Early Abort",
+                    "icon": "⏱️",
+                    "threshold": f">{ea_hours:.0f}h & MFE<{ea_mfe*100:.1f}% & PnL<{ea_loss*100:.1f}%",
+                    "current": f"{ea_met}/3 condiciones",
+                    "progress": ea_met / 3 * 100,
+                    "triggered": all(ea_conds),
+                    "detail": f"hold={'✓' if ea_conds[0] else '✗'} MFE={'✓' if ea_conds[1] else '✗'} PnL={'✓' if ea_conds[2] else '✗'}",
+                })
+
             results.append({
                 "trade_id": t["id"],
                 "symbol": symbol,

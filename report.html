@@ -234,7 +234,8 @@ const variantLabels = { conservative: 'Conservative', base: 'Base', aggressive: 
 const reasonColors = {
   pump_capture:'#3fb950', take_profit:'#39d353', trailing_stop:'#58a6ff',
   breakeven_stop:'#d29922', stop_loss:'#f85149', oi_abort:'#f47067',
-  max_hold:'#bc8cff', reversal:'#a5d6ff', service_restart:'#8b949e'
+  max_hold:'#bc8cff', reversal:'#a5d6ff', service_restart:'#8b949e',
+  profit_lock:'#2dd4bf', early_abort:'#fb923c'
 };
 
 let trades = [];
@@ -821,7 +822,8 @@ function renderTradeTable() {
     const isOpen = t.status === 'open';
     const pc = t.pnlUsd >= 0 ? 'positive' : 'negative';
     const rb = { pump_capture:'badge-green', take_profit:'badge-green', trailing_stop:'badge-blue',
-      breakeven_stop:'badge-orange', stop_loss:'badge-red', oi_abort:'badge-red', open:'badge-purple'
+      breakeven_stop:'badge-orange', stop_loss:'badge-red', oi_abort:'badge-red', open:'badge-purple',
+      profit_lock:'badge-green', early_abort:'badge-orange'
     }[t.reason] || 'badge-orange';
 
     const comp = [

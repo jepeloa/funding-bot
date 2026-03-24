@@ -79,7 +79,7 @@ LOG_LEVEL = "INFO"
 # ══════════════════════════════════════════════════════════════════
 INITIAL_CAPITAL = 10_000.0
 TAKER_FEE = 0.0004
-STRATEGY_VERSION = "v2"   # v2 = score4 + funding hard + tighter SL + concurrency throttle + adaptive sizing
+STRATEGY_VERSION = "v3"   # v3 = MAX scheme: partial TP 33%@1.5%, profit lock +0.5%, SL 3.5%, early abort 2h
 
 # ══════════════════════════════════════════════════════════════════
 #  SCORE Ŝ_αf — Umbrales universales (Paper Table 1)
@@ -154,7 +154,7 @@ VARIANTS = {
         "entry_exhaustion_min": 3,      # was 2
         "capital_fraction": 0.05,
         "leverage": 5,
-        "stop_loss_pct": 0.05,          # 5%
+        "stop_loss_pct": 0.035,         # 3.5% (MAX scheme: tighter SL, was 5%)
         "take_profit_pct": 0.15,        # 15%
         "max_hold_hours": 48,           # 48h
         "min_hold_hours": 4,            # was 1h
@@ -163,6 +163,13 @@ VARIANTS = {
         "breakeven_trigger_pct": 0.02,
         "trailing_activation_pct": 0.05,
         "trailing_callback_pct": 0.50,
+        # ── MAX exit scheme: partial TP + profit lock + early abort ──
+        "partial_tp_mfe_pct": 0.015,     # tomar TP parcial al 1.5% MFE
+        "partial_tp_fraction": 0.33,     # cerrar 33% de la posición
+        "profit_lock_pct": 0.005,        # floor +0.5% para el resto tras TP parcial
+        "early_abort_hours": 2.0,        # si después de 2h...
+        "early_abort_max_mfe": 0.005,    # ...MFE nunca superó 0.5%...
+        "early_abort_max_loss": -0.02,   # ...y PnL < -2% → salir
     },
     "aggressive": {
         "entry_funding_min": 0.00008,   # r ≥ 0.008%
