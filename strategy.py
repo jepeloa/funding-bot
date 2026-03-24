@@ -36,6 +36,7 @@ from config import (
     DATA_DIR,
     load_trading_config,
 )
+from adaptive_exit import AdaptiveExitCalibrator, TradeRecord
 
 log = logging.getLogger("strategy")
 
@@ -89,6 +90,8 @@ class VariantTradeState:
     live_qty: float = 0.0
     # Real commission from Binance (0 for dry-run)
     entry_commission: float = 0.0
+    # MFE timestamp tracking (AEPS)
+    mfe_timestamp: float = 0.0  # epoch cuando se alcanzó MFE máximo
     # Partial TP tracking (MAX exit scheme)
     partial_tp_taken: bool = False
     original_qty: float = 0.0   # qty antes del cierre parcial
@@ -181,6 +184,9 @@ class SymbolState:
         self.sma_24h: float = 0.0
         self.oi_change_24h: float = 0.0
         self.oi_change_1h: float = 0.0   # short-term dOI for reversal exit
+
+        # ── ATR% continuo (AEPS) ──
+        self.atr_pct: float = 0.0  # ATR como % del precio (rolling 14 candles de 1h)
 
         # ── Grabación condicional ──
         self.recording: bool = False       # ¿grabar datos pesados ahora?
@@ -276,6 +282,7 @@ class SymbolState:
         self._compute_energy(now)
         self._compute_exhaustion(now)
         self._compute_premium_velocity()
+        self._compute_atr()
 
     def _compute_price_metrics(self, now: float):
         """ΔP_12h, ΔP_24h, P_max_24h, SMA_24h."""
@@ -558,6 +565,40 @@ class SymbolState:
         self._prev_velocity_sign = new_sign
         self.premium_velocity = slope
 
+    def _compute_atr(self):
+        """ATR% sobre últimas 14 velas de 1 hora (rolling, sin I/O)."""
+        # Necesitamos al menos 14h de velas de 1min (14*60 = 840)
+        if len(self._candles) < 840:
+            return
+
+        # Agrupar velas de 1min en velas de 1h usando los últimos 840+ minutos
+        candles_list = list(self._candles)
+        # Solo necesitamos las últimas 15h de 1min candles (900 para 14 hourly + 1 prev close)
+        recent = candles_list[-900:] if len(candles_list) > 900 else candles_list
+
+        hourly = []
+        bucket = []
+        for c in recent:
+            bucket.append(c)
+            if len(bucket) >= 60:
+                h = max(cc.high for cc in bucket)
+                lo = min(cc.low for cc in bucket)
+                cl = bucket[-1].close
+                prev_cl = hourly[-1][2] if hourly else bucket[0].open
+                tr = max(h - lo, abs(h - prev_cl), abs(lo - prev_cl))
+                hourly.append((h, lo, cl, tr))
+                bucket = []
+
+        if len(hourly) < 14:
+            return
+
+        # ATR = SMA de los últimos 14 true ranges
+        recent_trs = [h[3] for h in hourly[-14:]]
+        atr = sum(recent_trs) / len(recent_trs)
+
+        if self.mark_price > 0:
+            self.atr_pct = atr / self.mark_price
+
     # ══════════════════════════════════════════════════════════════
     #  Snapshot (para grabar en DB)
     # ══════════════════════════════════════════════════════════════
@@ -649,6 +690,11 @@ class StrategyEngine:
             f"capital=${INITIAL_CAPITAL:,.0f}/variante"
         )
 
+        # AEPS: un calibrador por variante
+        self.exit_calibrators: dict[str, AdaptiveExitCalibrator] = {}
+        for vname, vparams in VARIANTS.items():
+            self.exit_calibrators[vname] = AdaptiveExitCalibrator(vparams)
+
     def get_state(self, symbol: str) -> SymbolState:
         sym = symbol.upper()
         if sym not in self.states:
@@ -679,6 +725,7 @@ class StrategyEngine:
             pnl_pct = (vtrade.entry_price - mark_price) / vtrade.entry_price
             if pnl_pct > vtrade.mfe:
                 vtrade.mfe = pnl_pct
+                vtrade.mfe_timestamp = time.time()
             if pnl_pct < vtrade.mae:
                 vtrade.mae = pnl_pct
 
@@ -1059,7 +1106,10 @@ class StrategyEngine:
     async def _evaluate_exit(self, state: SymbolState,
                              vtrade: VariantTradeState,
                              vname: str, vparams: dict, now: float):
-        """Evalúa condiciones de salida para un trade abierto."""
+        """Evalúa condiciones de salida para un trade abierto.
+        Usa parámetros adaptativos (AEPS) para todos los thresholds de salida.
+        Los parámetros de ENTRADA siguen usando vparams[].
+        """
         price = state.mark_price
         entry = vtrade.entry_price
 
@@ -1077,102 +1127,82 @@ class StrategyEngine:
             vtrade.mae = pnl_pct
 
         # Funding collection (intervalo dinámico, default 8h)
-        # Remark funding_freq: Binance ajusta a 4h/2h/1h en FOMO extremo
         funding_interval = state.funding_interval_secs
         if now - vtrade.last_funding_collection >= funding_interval:
             if state.funding_rate > 0 and vtrade.entry_notional > 0:
-                # Paper Eq.14: r(t_k) × Q × P(t_k) — use current mark price notional
                 current_notional = vtrade.entry_notional * state.mark_price / vtrade.entry_price if vtrade.entry_price > 0 else vtrade.entry_notional
                 funding_payment = state.funding_rate * current_notional
                 vtrade.funding_collected += funding_payment
             vtrade.last_funding_collection = now
 
+        # ── AEPS: obtener parámetros adaptativos ──
+        calibrator = self.exit_calibrators[vname]
+        ap = calibrator.get_params(current_atr_pct=state.atr_pct)
+
         exit_reason = None
 
-        # ── MAX exit scheme: Early Abort ──
-        # Si después de N horas el MFE nunca superó un umbral mínimo
-        # y el trade va en pérdida, salir antes de tocar el SL.
-        ea_hours = vparams.get("early_abort_hours", 0)
-        ea_max_mfe = vparams.get("early_abort_max_mfe", 0)
-        ea_max_loss = vparams.get("early_abort_max_loss", 0)
-        if (ea_hours > 0
-              and hold_hours > ea_hours
-              and vtrade.mfe < ea_max_mfe
-              and pnl_pct < ea_max_loss):
+        # ── Early Abort (adaptive) ──
+        if (ap.early_abort_hours > 0
+              and hold_hours > ap.early_abort_hours
+              and vtrade.mfe < ap.early_abort_max_mfe
+              and pnl_pct < ap.early_abort_max_loss):
             exit_reason = "early_abort"
 
-        # ── MAX exit scheme: Partial TP + Profit Lock ──
-        # Cuando MFE llega al umbral, cerrar fracción de la posición.
-        # Después, el resto tiene un floor de profit (profit_lock_pct).
-        pt_mfe = vparams.get("partial_tp_mfe_pct", 0)
-        pt_frac = vparams.get("partial_tp_fraction", 0)
-        p_lock = vparams.get("profit_lock_pct", 0)
-
-        if not exit_reason and pt_mfe > 0 and pt_frac > 0 and not vtrade.partial_tp_taken:
-            if vtrade.mfe >= pt_mfe:
-                # Tomar TP parcial ahora
+        # ── Partial TP + Profit Lock (adaptive) ──
+        if not exit_reason and ap.partial_tp_mfe_pct > 0 and ap.partial_tp_fraction > 0 and not vtrade.partial_tp_taken:
+            if vtrade.mfe >= ap.partial_tp_mfe_pct:
                 await self._partial_close_trade(
-                    state, vtrade, vname, vparams, now, price, pt_frac,
+                    state, vtrade, vname, vparams, now, price, ap.partial_tp_fraction,
                 )
 
         # Profit lock: si ya se tomó parcial y pnl cayó bajo el floor, salir
-        if not exit_reason and vtrade.partial_tp_taken and p_lock > 0:
-            if pnl_pct <= p_lock:
+        if not exit_reason and vtrade.partial_tp_taken and ap.profit_lock_pct > 0:
+            if pnl_pct <= ap.profit_lock_pct:
                 exit_reason = "profit_lock"
 
-        # ── Trailing continuo con floor dinámico ──
-        # Reemplaza la lógica binaria breakeven/trailing por una rampa continua.
-        # Paper §2.4 exits (i)-(v) no incluyen breakeven; este mecanismo es
-        # un add-on de risk management que protege profits sin zona muerta.
-        trailing_act = vparams.get("trailing_activation_pct", 0)
-        breakeven_trig = vparams.get("breakeven_trigger_pct", 0)
-        trailing_cb = vparams.get("trailing_callback_pct", 0.5)
-
-        if breakeven_trig > 0 and vtrade.mfe >= breakeven_trig:
-            if trailing_act > 0 and vtrade.mfe >= trailing_act:
-                # Trailing clásico: lock-in = MFE * (1 - callback)
-                trail_floor = vtrade.mfe * (1.0 - trailing_cb)
+        # ── Trailing continuo con floor dinámico (adaptive) ──
+        if ap.breakeven_trigger_pct > 0 and vtrade.mfe >= ap.breakeven_trigger_pct:
+            if ap.trailing_activation_pct > 0 and vtrade.mfe >= ap.trailing_activation_pct:
+                trail_floor = vtrade.mfe * (1.0 - ap.trailing_callback_pct)
             else:
-                # Zona intermedia: floor interpola linealmente
-                range_width = max(trailing_act - breakeven_trig, 0.001)
-                progress = min((vtrade.mfe - breakeven_trig) / range_width, 1.0)
-                max_floor = vtrade.mfe * (1.0 - trailing_cb)
+                range_width = max(ap.trailing_activation_pct - ap.breakeven_trigger_pct, 0.001)
+                progress = min((vtrade.mfe - ap.breakeven_trigger_pct) / range_width, 1.0)
+                max_floor = vtrade.mfe * (1.0 - ap.trailing_callback_pct)
                 trail_floor = progress * max_floor
 
             if pnl_pct < trail_floor:
                 exit_reason = "trailing_stop"
 
-        elif trailing_act > 0 and vtrade.mfe >= trailing_act:
-            # Fallback: trailing puro (breakeven_trig=0 o no configurado)
-            trail_floor = vtrade.mfe * (1.0 - trailing_cb)
+        elif ap.trailing_activation_pct > 0 and vtrade.mfe >= ap.trailing_activation_pct:
+            trail_floor = vtrade.mfe * (1.0 - ap.trailing_callback_pct)
             if pnl_pct < trail_floor:
                 exit_reason = "trailing_stop"
 
-        # ── (i) Stop Loss (only if trailing/breakeven hasn't fired) ──
-        if not exit_reason and pnl_pct <= -vparams["stop_loss_pct"]:
+        # ── (i) Stop Loss (adaptive) ──
+        if not exit_reason and pnl_pct <= -ap.stop_loss_pct:
             exit_reason = "stop_loss"
 
-        # ── (ii) Take Profit ──
+        # ── (ii) Take Profit (static — no adaptar, es el cap final) ──
         if not exit_reason and pnl_pct >= vparams["take_profit_pct"]:
             exit_reason = "take_profit"
 
-        # ── OI Circuit Breaker (Paper Eq. 17) ──
+        # ── OI Circuit Breaker (static) ──
         if not exit_reason and vtrade.entry_oi > 0 and state.oi_value > 0:
             oi_change = (state.oi_value - vtrade.entry_oi) / vtrade.entry_oi
             if oi_change > vparams["oi_abort_pct"]:
                 exit_reason = "oi_abort"
 
-        # ── (iii) Maximum Hold ──
+        # ── (iii) Maximum Hold (static) ──
         if not exit_reason and hold_hours >= vparams["max_hold_hours"]:
             exit_reason = "max_hold"
 
-        # ── (iv) Pump Capture: MFE ≥ ½|ΔP_24h| AND Ê ≥ 2 (Paper condition iv) ──
+        # ── (iv) Pump Capture ──
         if not exit_reason and (vtrade.mfe >= 0.5 * abs(state.price_change_24h)
               and vtrade.mfe > 0.01
               and state.exhaustion >= 2):
             exit_reason = "pump_capture"
 
-        # ── (v) Reversal Signal: dOI > 0 (1h) AND η_buy > 55% ──
+        # ── (v) Reversal Signal ──
         if not exit_reason and (hold_hours >= vparams["min_hold_hours"]
               and pnl_pct > 0.01
               and state.oi_change_1h > 0
@@ -1335,9 +1365,50 @@ class StrategyEngine:
             "mfe_pct": vtrade.mfe,
             "mae_pct": vtrade.mae,
             "hold_hours": hold_hours,
+            # AEPS fields
+            "etd_pct": vtrade.mfe - pnl_pct,
+            "atr_at_entry": state.atr_pct,
+            "time_to_mfe_secs": (vtrade.mfe_timestamp - vtrade.entry_time)
+                                if vtrade.mfe_timestamp > 0 else 0,
+            "partial_tp_triggered": vtrade.partial_tp_taken,
         }
 
         await self.writer.close_virtual_trade(trade_id, exit_data)
+
+        # ── AEPS: registrar trade en calibrador ──
+        try:
+            record = TradeRecord(
+                mfe_pct=vtrade.mfe,
+                mae_pct=vtrade.mae,
+                etd_pct=vtrade.mfe - pnl_pct,
+                pnl_pct=pnl_pct,
+                atr_at_entry=state.atr_pct,
+                time_to_mfe_secs=(vtrade.mfe_timestamp - vtrade.entry_time)
+                                  if vtrade.mfe_timestamp > 0 else 0,
+                hold_secs=(now - vtrade.entry_time),
+                exit_reason=reason,
+                score_at_entry=state.score,
+                is_winner=(pnl_pct > 0),
+            )
+            cal = self.exit_calibrators[vname]
+            prev_cal_count = cal._calibration_count
+            cal.add_trade(record)
+            # Telegram notification on recalibration
+            if cal._calibration_count > prev_cal_count and self.telegram:
+                try:
+                    ap = cal.current
+                    await self.telegram.send_message(
+                        f"🔧 *AEPS Recalibrado* [{vname}]\n"
+                        f"SL: {ap.stop_loss_pct:.2%} | "
+                        f"Trailing: {ap.trailing_activation_pct:.2%}/{ap.trailing_callback_pct:.0%}\n"
+                        f"PTP: {ap.partial_tp_mfe_pct:.2%} | "
+                        f"Abort: {ap.early_abort_hours:.1f}h/{ap.early_abort_max_mfe:.2%}\n"
+                        f"Basado en últimos {ap.calibration_n} trades"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"AEPS feed error [{vname}]: {e}")
 
         # Actualizar equity de la variante (separado por modo del trade)
         tmode = vtrade.trade_mode
@@ -1406,6 +1477,7 @@ class StrategyEngine:
         vtrade.partial_tp_taken = False
         vtrade.original_qty = 0.0
         vtrade.partial_tp_pnl_usd = 0.0
+        vtrade.mfe_timestamp = 0.0
 
         # NO resetear energy — se disipa naturalmente cuando el score baja
         # (la energía es estado de mercado compartido, no de un trade)
@@ -1478,6 +1550,9 @@ class StrategyEngine:
                 f"@ ${t['entry_price']:.6f} "
                 f"(abierto hace {(time.time() - t['entry_time'])/3600:.1f}h)"
             )
+
+        # Restaurar AEPS calibrators desde disco
+        self.restore_calibrators()
 
     # ══════════════════════════════════════════════════════════════
     #  GRABACIÓN CONDICIONAL
@@ -1566,6 +1641,38 @@ class StrategyEngine:
                 await self.writer.insert_snapshot(state.to_snapshot(now))
 
     # ══════════════════════════════════════════════════════════════
+    #  AEPS persistence
+    # ══════════════════════════════════════════════════════════════
+
+    def persist_calibrators(self):
+        """Guarda estado del AEPS en disco (JSON por variante)."""
+        for vname, cal in self.exit_calibrators.items():
+            path = os.path.join(os.path.dirname(__file__), f"aeps_{vname}.json")
+            tmp = path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(cal.to_dict(), f)
+                os.replace(tmp, path)
+            except Exception as e:
+                log.warning(f"AEPS persist error [{vname}]: {e}")
+
+    def restore_calibrators(self):
+        """Restaura AEPS al arrancar."""
+        for vname, vparams in VARIANTS.items():
+            path = os.path.join(os.path.dirname(__file__), f"aeps_{vname}.json")
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                    self.exit_calibrators[vname] = (
+                        AdaptiveExitCalibrator.from_dict(data, vparams)
+                    )
+                    log.info(f"♻️ AEPS [{vname}] restaurado: "
+                             f"{self.exit_calibrators[vname].status()}")
+                except Exception as e:
+                    log.warning(f"AEPS restore error [{vname}]: {e}")
+
+    # ══════════════════════════════════════════════════════════════
     #  Status (para logging periódico)
     # ══════════════════════════════════════════════════════════════
 
@@ -1604,12 +1711,25 @@ class StrategyEngine:
         ]
 
         rec_str = ", ".join(recording) if recording else "ninguno"
+
+        # AEPS status
+        aeps_parts = []
+        for vname in VARIANTS:
+            cal = self.exit_calibrators[vname]
+            aeps_parts.append(
+                f"{vname[0].upper()}: "
+                f"SL={cal.current.stop_loss_pct:.1%}/"
+                f"T={cal.current.trailing_activation_pct:.1%}"
+            )
+        aeps_str = " | ".join(aeps_parts)
+
         return (
             f"📡 {initialized}/{total} | "
             f"📋PAPER {' '.join(paper_parts)} | "
             f"💰LIVE {' '.join(live_parts)} | "
             f"🔴 REC [{len(recording)}]: {rec_str} | "
-            f"hot: {', '.join(hot_symbols) if hot_symbols else '-'}"
+            f"hot: {', '.join(hot_symbols) if hot_symbols else '-'} | "
+            f"🔧AEPS [{aeps_str}]"
         )
 
     def detailed_status(self) -> list[str]:
@@ -1709,6 +1829,25 @@ class StrategyEngine:
             "live": {v: round(p, 2) for v, p in self.daily_pnl["live"].items()},
         }
 
+        # AEPS status
+        aeps_status = {}
+        for vname, cal in self.exit_calibrators.items():
+            ap = cal.current
+            aeps_status[vname] = {
+                "calibration_n": ap.calibration_n,
+                "calibration_count": cal._calibration_count,
+                "history_size": len(cal.history),
+                "stop_loss_pct": round(ap.stop_loss_pct, 4),
+                "partial_tp_mfe_pct": round(ap.partial_tp_mfe_pct, 4),
+                "profit_lock_pct": round(ap.profit_lock_pct, 4),
+                "breakeven_trigger_pct": round(ap.breakeven_trigger_pct, 4),
+                "trailing_activation_pct": round(ap.trailing_activation_pct, 4),
+                "trailing_callback_pct": round(ap.trailing_callback_pct, 4),
+                "early_abort_hours": round(ap.early_abort_hours, 2),
+                "early_abort_max_mfe": round(ap.early_abort_max_mfe, 4),
+                "early_abort_max_loss": round(ap.early_abort_max_loss, 4),
+            }
+
         status = {
             "timestamp": now,
             "initialized": initialized,
@@ -1720,6 +1859,7 @@ class StrategyEngine:
             "open_trades": open_trades,
             "equities": equities,
             "daily_pnl": daily_pnl,
+            "aeps": aeps_status,
         }
 
         path = os.path.join(os.path.dirname(__file__), "strategy_status.json")

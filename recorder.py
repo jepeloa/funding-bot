@@ -669,12 +669,13 @@ async def periodic_strategy_eval(strategy: StrategyEngine, interval: float = 5.0
 
 
 async def periodic_strategy_snapshot(strategy: StrategyEngine, interval: float = 60.0):
-    """Graba snapshot de estado de todos los símbolos."""
+    """Graba snapshot de estado de todos los símbolos + persiste AEPS."""
     while not shutdown_event.is_set():
         await asyncio.sleep(interval)
         try:
             now = time.time()
             await strategy.snapshot_all(now)
+            strategy.persist_calibrators()
         except Exception as e:
             log.error(f"Strategy snapshot error: {e}")
 

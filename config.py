@@ -79,7 +79,7 @@ LOG_LEVEL = "INFO"
 # ══════════════════════════════════════════════════════════════════
 INITIAL_CAPITAL = 10_000.0
 TAKER_FEE = 0.0004
-STRATEGY_VERSION = "v3"   # v3 = MAX scheme: partial TP 33%@1.5%, profit lock +0.5%, SL 3.5%, early abort 2h
+STRATEGY_VERSION = "v4"   # v4 = AEPS: Adaptive Exit Parameter System (v3 + dynamic exit calibration)
 
 # ══════════════════════════════════════════════════════════════════
 #  SCORE Ŝ_αf — Umbrales universales (Paper Table 1)
