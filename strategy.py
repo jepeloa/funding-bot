@@ -87,6 +87,8 @@ class VariantTradeState:
     # Live trading attrs (None/0 en dry-run)
     binance_order_id: Optional[int] = None
     live_qty: float = 0.0
+    # Real commission from Binance (0 for dry-run)
+    entry_commission: float = 0.0
     # Partial TP tracking (MAX exit scheme)
     partial_tp_taken: bool = False
     original_qty: float = 0.0   # qty antes del cierre parcial
@@ -946,6 +948,7 @@ class StrategyEngine:
         binance_order_id = None
         actual_entry_price = price
         actual_qty = 0.0
+        entry_commission = 0.0
 
         if will_be_live:
             try:
@@ -967,6 +970,7 @@ class StrategyEngine:
                 )
                 binance_order_id = result.get("orderId")
                 actual_qty = float(result.get("executedQty", qty))
+                entry_commission = float(result.get("totalCommission", 0))
                 avg_px = result.get("avgPrice", 0)
                 if avg_px and float(avg_px) > 0:
                     actual_entry_price = float(avg_px)
@@ -1018,6 +1022,7 @@ class StrategyEngine:
         vtrade.trade_mode = trade_mode
         vtrade.binance_order_id = binance_order_id
         vtrade.live_qty = actual_qty
+        vtrade.entry_commission = entry_commission if will_be_live else 0.0
         vtrade.partial_tp_taken = False
         vtrade.original_qty = actual_qty
 
@@ -1194,6 +1199,7 @@ class StrategyEngine:
         close_qty = vtrade.live_qty * fraction if vtrade.live_qty > 0 else 0
         actual_price = price
         partial_notional = vtrade.entry_notional * fraction
+        result = None
 
         # ── LIVE: cierre parcial en Binance ──
         if vtrade.trade_mode == "live" and self.trader and close_qty > 0:
@@ -1224,7 +1230,10 @@ class StrategyEngine:
         # Calcular PnL parcial realizado
         partial_pnl_pct = (vtrade.entry_price - actual_price) / vtrade.entry_price
         partial_pnl_usd = partial_pnl_pct * partial_notional
-        partial_fees = 2 * TAKER_FEE * partial_notional  # entry + exit fees for this portion
+        # Fees: real exit commission + proportional entry commission
+        exit_commission = float(result.get("totalCommission", 0)) if vtrade.trade_mode == "live" and result else 0.0
+        entry_fee_portion = vtrade.entry_commission * fraction if vtrade.trade_mode == "live" else 0.0
+        partial_fees = (entry_fee_portion + exit_commission) if vtrade.trade_mode == "live" else 2 * TAKER_FEE * partial_notional
 
         # Actualizar notional restante y PnL parcial realizado
         vtrade.entry_notional -= partial_notional
@@ -1264,6 +1273,7 @@ class StrategyEngine:
         # Esto evita intentar cerrar en Binance un trade que fue paper, o dejar
         # abierto en Binance un trade live si el modo cambió a dry-run.
         actual_exit_price = exit_price
+        result = None
         if vtrade.trade_mode == "live" and self.trader:
             try:
                 # Cancelar órdenes condicionales (TP/SL) antes de cerrar
@@ -1290,8 +1300,18 @@ class StrategyEngine:
         # Recalcular PnL con el precio real de cierre (live) o el original (dry-run)
         pnl_pct = (vtrade.entry_price - actual_exit_price) / vtrade.entry_price
 
-        # Fees: 2 × taker fee × notional (Paper Eq. 14)
-        fees = 2 * TAKER_FEE * notional
+        # Fees: real Binance commission (live) or estimated (paper)
+        if vtrade.trade_mode == "live":
+            exit_commission = float(result.get("totalCommission", 0)) if result else 0.0
+            # Entry commission proportional to remaining notional
+            if vtrade.partial_tp_taken:
+                remaining_frac = 1.0 - VARIANTS.get(vname, {}).get("partial_tp_fraction", 0)
+                entry_fee_remaining = vtrade.entry_commission * remaining_frac
+            else:
+                entry_fee_remaining = vtrade.entry_commission
+            fees = entry_fee_remaining + exit_commission
+        else:
+            fees = 2 * TAKER_FEE * notional
 
         # PnL con leverage
         pnl_leveraged = pnl_pct * vparams["leverage"]
@@ -1382,6 +1402,7 @@ class StrategyEngine:
         vtrade.trade_mode = "paper"
         vtrade.binance_order_id = None
         vtrade.live_qty = 0.0
+        vtrade.entry_commission = 0.0
         vtrade.partial_tp_taken = False
         vtrade.original_qty = 0.0
         vtrade.partial_tp_pnl_usd = 0.0

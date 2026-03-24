@@ -283,13 +283,13 @@ class BinanceTrader:
         if leverage:
             await self.set_leverage(sym, leverage)
 
-        # Orden MARKET SHORT (RESULT para obtener fill inmediato)
+        # Orden MARKET SHORT (FULL para obtener fills con commission)
         params = {
             "symbol": sym,
             "side": "SELL",
             "type": "MARKET",
             "quantity": str(qty),
-            "newOrderRespType": "RESULT",
+            "newOrderRespType": "FULL",
         }
         # Hedge mode → positionSide
         if self._hedge_mode:
@@ -297,6 +297,11 @@ class BinanceTrader:
 
         log.info(f"[{self.account_name}] OPEN SHORT {sym} qty={qty} lev={leverage}")
         result = await self._signed_post("/fapi/v1/order", params)
+
+        # Extraer commission real de los fills
+        result["totalCommission"] = sum(
+            float(f.get("commission", 0)) for f in result.get("fills", [])
+        )
 
         # Colocar TP/SL tras fill confirmado
         fill_status = result.get("status", "")
@@ -336,7 +341,7 @@ class BinanceTrader:
             "side": close_side,
             "type": "MARKET",
             "quantity": str(close_qty),
-            "newOrderRespType": "RESULT",
+            "newOrderRespType": "FULL",
         }
         if self._hedge_mode:
             params["positionSide"] = pos["position_side"]
@@ -347,7 +352,14 @@ class BinanceTrader:
             f"[{self.account_name}] CLOSE {pos['side']} {sym} "
             f"qty={close_qty}"
         )
-        return await self._signed_post("/fapi/v1/order", params)
+        result = await self._signed_post("/fapi/v1/order", params)
+
+        # Extraer commission real de los fills
+        result["totalCommission"] = sum(
+            float(f.get("commission", 0)) for f in result.get("fills", [])
+        )
+
+        return result
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  TP / SL (CONDITIONAL ORDERS)

@@ -341,16 +341,19 @@ async function loadTrades() {
   const trades = await apiFetch('/vtrades?limit=500');
   allTrades = trades.sort((a, b) => b.entry_time - a.entry_time);
 
-  // Populate symbol filter
+  // Populate symbol filter (avoid duplicates on refresh)
   const symbols = [...new Set(allTrades.map(t => t.symbol))].sort();
   const sel = document.getElementById('f-symbol');
+  const existing = new Set([...sel.options].map(o => o.value));
   symbols.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s; opt.text = s;
-    sel.appendChild(opt);
+    if (!existing.has(s)) {
+      const opt = document.createElement('option');
+      opt.value = s; opt.text = s;
+      sel.appendChild(opt);
+    }
   });
 
-  renderTradeList(allTrades);
+  applyFilters();
 }
 
 function renderTradeList(trades) {
@@ -858,9 +861,10 @@ async function loadHotCandidates() {
   }
 }
 
-// Initial load + refresh every 15s
+// Initial load + refresh
 loadHotCandidates();
 setInterval(loadHotCandidates, 15000);
+setInterval(async () => { try { await loadTrades(); loadPnlStats(); } catch(e) { console.error('Trade refresh error:', e); } }, 30000);
 </script>
 </body>
 </html>
