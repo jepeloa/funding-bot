@@ -1,0 +1,1079 @@
+\documentclass[11pt,a4paper]{article}
+
+% ─── Packages ───
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,english]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{
+  arrows.meta,
+  positioning,
+  shapes.geometric,
+  shapes.multipart,
+  calc,
+  fit,
+  backgrounds,
+  decorations.pathreplacing,
+  chains
+}
+
+\geometry{margin=2.5cm}
+
+% ─── Colors ───
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{cgray}{RGB}{149,165,166}
+\definecolor{cdark}{RGB}{44,62,80}
+\definecolor{clight}{RGB}{236,240,241}
+\definecolor{cyellow}{RGB}{241,196,15}
+
+% Version colors
+\definecolor{v1col}{RGB}{149,165,166}
+\definecolor{v2col}{RGB}{41,128,185}
+\definecolor{v3col}{RGB}{243,156,18}
+\definecolor{v4col}{RGB}{142,68,173}
+
+% ─── TikZ styles ───
+\tikzstyle{process} = [rectangle, rounded corners, minimum width=3cm, minimum height=1cm, align=center, draw=cdark, fill=clight, font=\small]
+\tikzstyle{decision} = [diamond, aspect=2.5, minimum width=2.5cm, align=center, draw=cdark, fill=cyellow!20, font=\small]
+\tikzstyle{io} = [trapezium, trapezium left angle=70, trapezium right angle=110, minimum width=2.5cm, align=center, draw=cdark, fill=cblue!15, font=\small]
+\tikzstyle{startstop} = [rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center, draw=cdark, fill=cgreen!20, font=\small\bfseries]
+\tikzstyle{alert} = [rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center, draw=cred, fill=cred!15, font=\small]
+\tikzstyle{arrow} = [thick,->,>=stealth]
+
+\tcbset{
+  infobox/.style={colback=cblue!5, colframe=cblue!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  warnbox/.style={colback=corange!5, colframe=corange!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  versionbox/.style={colback=#1!8, colframe=#1!70, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt}
+}
+
+% ─── Custom commands ───
+\newcommand{\af}{\alpha_f}
+\newcommand{\score}{\hat{S}_{\alpha_f}}
+\newcommand{\energy}{E_{\alpha_f}}
+\newcommand{\exh}{\hat{E}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\file}[1]{\texttt{\small\color{cblue}#1}}
+\newcommand{\param}[1]{\texttt{\small\color{cpurple}#1}}
+
+% ═══════════════════════════════════════════════════════════════
+\begin{document}
+
+% ─── Title ───
+\begin{center}
+    {\LARGE\bfseries $\af$ Bifurcation Short Bot}\\[6pt]
+    {\LARGE\bfseries Documentaci\'on T\'ecnica de Implementaci\'on}\\[16pt]
+    {\large Javier Epeloa\quad$\cdot$\quad Mapplics}\\[8pt]
+    {\normalsize Documento T\'ecnico --- Marzo 2026}\\[4pt]
+    {\small\itshape Implementaci\'on del bot de trading basado en el paper\\
+    ``Trading the $\af$ Bifurcation'' (2026)}
+\end{center}
+
+\vspace{12pt}
+
+\begin{abstract}
+Este documento describe la implementaci\'on completa del bot de trading
+$\af$ Bifurcation Short, un sistema automatizado para operar en el mercado
+de futuros perpetuos de Binance. El sistema graba datos de mercado en
+tiempo real (WebSocket + REST), calcula un score compuesto de 5 componentes
+que detecta la inversi\'on del spring $\af < 0$, acumula energ\'ia temporal,
+detecta se\~nales de agotamiento (exhaustion) y ejecuta entradas short con
+4 variantes simult\'aneas. Se documenta la arquitectura del sistema, los
+flujos de datos, la l\'ogica de decisi\'on de entrada/salida, el sistema
+adaptativo de par\'ametros de salida (AEPS) y la evoluci\'on del sistema
+desde v1 hasta v4.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════
+\section{Arquitectura del Sistema}
+\label{sec:architecture}
+% ═══════════════════════════════════════════════════════════════
+
+El bot est\'a compuesto por m\'ultiples m\'odulos que operan de forma
+concurrente mediante \code{asyncio}. La Figura~\ref{fig:arch} muestra
+la arquitectura general.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.2cm and 1.5cm, font=\small]
+
+  % ─── External sources ───
+  \node[io, minimum width=4cm] (binance_ws) {Binance WS\\(500+ symbols $\times$ 4 streams)};
+  \node[io, minimum width=3.5cm, right=2.5cm of binance_ws] (binance_rest) {Binance REST\\(OI, Funding, LSR, Taker)};
+
+  % ─── Recorder ───
+  \node[process, below=1cm of binance_ws, minimum width=4cm, fill=cblue!15] (recorder) {\textbf{recorder.py}\\Multi-WS Listener\\Message Router};
+
+  % ─── Database ───
+  \node[process, below=1cm of recorder, minimum width=3.5cm, fill=cgreen!15] (db) {\textbf{db.py}\\TimescaleDB\\AsyncDBWriter};
+
+  % ─── Strategy ───
+  \node[process, right=2cm of recorder, minimum width=4cm, fill=corange!15] (strategy) {\textbf{strategy.py}\\StrategyEngine\\4 Variantes $\times$ N symbols};
+
+  % ─── AEPS ───
+  \node[process, below=1cm of strategy, minimum width=3.5cm, fill=cpurple!15] (aeps) {\textbf{adaptive\_exit.py}\\AEPS Calibrators\\(1 por variante)};
+
+  % ─── Trader ───
+  \node[process, right=2cm of strategy, minimum width=3.5cm, fill=cred!15] (trader) {\textbf{binance\_trader.py}\\BinanceTrader\\(\'ordenes reales)};
+
+  % ─── API ───
+  \node[process, below=1cm of db, minimum width=3cm, fill=cyellow!20] (api) {\textbf{api.py}\\FastAPI\\(port 8008)};
+
+  % ─── Telegram ───
+  \node[process, below right=1cm and 0.5cm of trader, minimum width=3cm, fill=cgreen!15] (telegram) {\textbf{telegram\_bot.py}\\Notificaciones};
+
+  % ─── Frontend ───
+  \node[io, below=1cm of api] (frontend) {Dashboard / Report\\(HTML served)};
+
+  % ─── Arrows ───
+  \draw[arrow] (binance_ws) -- (recorder);
+  \draw[arrow] (binance_rest) -- node[above,font=\scriptsize]{polls} (recorder);
+  \draw[arrow] (recorder) -- (db);
+  \draw[arrow] (recorder) -- node[above,font=\scriptsize]{feed price, trades} (strategy);
+  \draw[arrow] (strategy) -- (aeps);
+  \draw[arrow, dashed] (strategy) -- node[above,font=\scriptsize]{live mode} (trader);
+  \draw[arrow] (strategy) -- (db);
+  \draw[arrow, dashed] (strategy) -- (telegram);
+  \draw[arrow] (db) -- (api);
+  \draw[arrow] (api) -- (frontend);
+  \draw[arrow, dashed] (trader) -- node[right,font=\scriptsize]{Binance API} +(0,1.5);
+
+\end{tikzpicture}
+\caption{Arquitectura general del sistema. L\'ineas punteadas indican flujos opcionales (modo live).}
+\label{fig:arch}
+\end{figure}
+
+\subsection{M\'odulos del Sistema}
+
+\begin{table}[H]
+\centering
+\caption{M\'odulos principales y sus responsabilidades.}
+\label{tab:modules}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{M\'odulo} & \textbf{Responsabilidad} & \textbf{L\'ineas} \\
+\midrule
+\file{recorder.py} & Loop principal: WebSockets, pollers REST, tareas peri\'odicas, gesti\'on de se\~nales & $\sim$800 \\
+\file{strategy.py} & Motor de estrategia: score, energ\'ia, exhaustion, entrada, salida, sizing & $\sim$1850 \\
+\file{adaptive\_exit.py} & AEPS: calibraci\'on adaptativa de par\'ametros de salida & $\sim$400 \\
+\file{binance\_trader.py} & Cliente de trading: \'ordenes de mercado, firma HMAC, gesti\'on de posiciones & $\sim$300 \\
+\file{db.py} & Writer as\'incrono: pool \code{asyncpg}, batch inserts, hypertables & $\sim$500 \\
+\file{api.py} & API REST: endpoints de datos, trades, dashboards HTML & $\sim$600 \\
+\file{telegram\_bot.py} & Notificaciones: apertura, cierre, recalibraci\'on AEPS, comandos & $\sim$200 \\
+\file{config.py} & Configuraci\'on: variantes, cuentas, par\'ametros globales & $\sim$280 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Streams de Datos}
+
+El sistema captura 4 streams WebSocket por s\'imbolo y 5 pollers REST:
+
+\begin{table}[H]
+\centering
+\caption{Fuentes de datos en tiempo real.}
+\label{tab:streams}
+\begin{tabularx}{\textwidth}{llXl}
+\toprule
+\textbf{Tipo} & \textbf{Stream} & \textbf{Datos} & \textbf{Frecuencia} \\
+\midrule
+WS & \code{depth20@100ms} & Order book (20 niveles bid/ask) & 100ms \\
+WS & \code{aggTrade} & Trades agregados (precio, qty, lado) & tick \\
+WS & \code{bookTicker} & Mejor bid/ask & tick \\
+WS & \code{markPrice@1s} & Mark price, index, funding rate & 1s \\
+\midrule
+REST & \code{/fapi/v1/openInterest} & OI por s\'imbolo & 15s \\
+REST & \code{/fapi/v1/premiumIndex} & Funding rate premium & 300s \\
+REST & \code{/fapi/v1/fundingInfo} & Intervalos din\'amicos funding & 3600s \\
+REST & \code{globalLongShortRatio} & Ratio L/S (top 50) & 300s \\
+REST & \code{takerlongshortRatio} & Volumen taker B/S (top 50) & 300s \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Base de Datos}
+
+Se utiliza TimescaleDB (extensi\'on de PostgreSQL para series temporales)
+con hypertables para datos de mercado y tablas regulares para trades:
+
+\begin{table}[H]
+\centering
+\caption{Esquema de base de datos.}
+\label{tab:schema}
+\begin{tabularx}{\textwidth}{llXl}
+\toprule
+\textbf{Tabla} & \textbf{Tipo} & \textbf{Contenido} & \textbf{Chunk} \\
+\midrule
+\code{depth\_updates} & Hypertable & Order book snapshots & 6h \\
+\code{agg\_trades} & Hypertable & Trades individuales & 6h \\
+\code{book\_tickers} & Hypertable & Best bid/ask & 6h \\
+\code{mark\_prices} & Hypertable & Mark, index, funding & 12h \\
+\code{open\_interest} & Hypertable & OI contratos + valor & 1d \\
+\code{funding\_rates} & Hypertable & Historial funding rate & 7d \\
+\code{liquidations} & Hypertable & Force orders & 6h \\
+\code{strategy\_snapshots} & Hypertable & Score, energ\'ia, exhaustion & 1d \\
+\code{virtual\_trades} & Regular & Trades abiertos/cerrados & --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Adicionalmente, se mantienen \textbf{agregados continuos} (materialized views)
+para OHLCV en 1 minuto, 1 hora y 1 d\'ia, calculados incrementalmente.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Composici\'on del Score $\score$}
+\label{sec:score}
+% ═══════════════════════════════════════════════════════════════
+
+El score $\score$ es un proxy compuesto de 5 componentes que detecta la
+condici\'on $\af < 0$ (spring invertido). Cada componente $c_i \in \{0, 0.5, 1.0\}$
+se calcula por umbrales:
+
+\begin{equation}
+c_i = \begin{cases}
+0.0 & \text{si } x_i < \theta_i^{\text{half}} \\
+0.5 & \text{si } \theta_i^{\text{half}} \leq x_i < \theta_i^{\text{full}} \\
+1.0 & \text{si } x_i \geq \theta_i^{\text{full}}
+\end{cases}
+\label{eq:component}
+\end{equation}
+
+\begin{equation}
+\score = \sum_{i=1}^{5} c_i \in [0.0, \, 5.0]
+\label{eq:score}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Componentes del score y umbrales (Paper Table~1).}
+\label{tab:score}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Componente} & \textbf{Observable} & $\bm{\theta^{\text{half}}}$ & $\bm{\theta^{\text{full}}}$ & \textbf{Significado f\'isico} \\
+\midrule
+$c_{\text{fund}}$ & Funding rate $r$ & $0.01\%$ & $0.05\%$ & Spring invertido \\
+$c_{\text{oi}}$ & $\Delta\text{OI}_{24\text{h}}$ & $2.5\%$ & $5\%$ & Apalancamiento creciente \\
+$c_{\text{price}}$ & $\Delta P_{12\text{h}}$ & $1.5\%$ & $3\%$ & Pump en precio \\
+$c_{\text{taker}}$ & Taker buy ratio $\eta$ & $52\%$ & $55\%$ & Compra retail (contrarian) \\
+$c_{\text{vol}}$ & $V / \bar{V}$ & $1.4\times$ & $2.0\times$ & Spike de volumen \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Acumulaci\'on de Energ\'ia $\energy$}
+\label{sec:energy}
+% ═══════════════════════════════════════════════════════════════
+
+La energ\'ia modela la tensi\'on acumulada del spring invertido:
+
+\begin{equation}
+\frac{d\energy}{dt} = \begin{cases}
++1 \;\text{h/h} & \text{si } \score \geq 3.0 \\
+-\tfrac{1}{2} \;\text{h/h} & \text{si } \score < 3.0
+\end{cases}
+\label{eq:energy}
+\end{equation}
+
+con $\energy(t_0) = 0$ y $\energy \geq 0$ (clamped). La hist\'eresis
+en el umbral $\score = 3.0$ evita oscilaciones r\'apidas. Un trade
+requiere $\energy \geq 6\text{h}$ en todas las variantes.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Contador de Agotamiento $\exh$}
+\label{sec:exhaustion}
+% ═══════════════════════════════════════════════════════════════
+
+El exhaustion counter $\exh \in [0, 5]$ detecta se\~nales de que la
+fase alcista est\'a agotando su impulso (bifurcaci\'on $\af: - \to +$):
+
+\begin{equation}
+\exh = \sum_{j=1}^{5} e_j
+\label{eq:exhaustion}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Indicadores de agotamiento (exhaustion).}
+\label{tab:exhaustion}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Indicador} & \textbf{Condici\'on} & \textbf{Significado} \\
+\midrule
+$e_1$: OI declining & $\Delta\text{OI}_{1\text{h}} < 0$ & Posiciones cerr\'andose \\
+$e_2$: Taker flip & $\eta < 45\%$ & Compradores agotados \\
+$e_3$: Wick rejection & $w_{\text{up}} > 2 \times |\text{body}|$ & Rechazo en m\'aximos \\
+$e_4$: Price off high & $P < 0.98 \times P_{\max,24\text{h}}$ & Retroceso desde m\'aximo \\
+$e_5$: Vol declining & $\dot{V} < 0$ (3min vs prev 3min) & Volumen sec\'andose \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Todas las variantes requieren $\exh \geq 3$ para entry (desde v2).
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Flujo de Decisi\'on de Entrada}
+\label{sec:entry}
+% ═══════════════════════════════════════════════════════════════
+
+La Figura~\ref{fig:entry_flow} muestra el flujo completo de evaluaci\'on
+de entrada. Cada 5 segundos, \code{evaluate\_all()} itera sobre todos
+los s\'imbolos $\times$ 4 variantes.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.9cm, font=\scriptsize]
+
+  \node[startstop] (start) {evaluate\_entry(symbol, variant)};
+
+  \node[decision, below=0.8cm of start] (d1) {Cooldown\\expirado?};
+  \node[decision, below=0.8cm of d1] (d2) {$\energy \geq$\\energy\_min?};
+  \node[decision, below=0.8cm of d2] (d3) {$\score \geq$\\score\_min?};
+  \node[decision, below=0.8cm of d3] (d4) {$\exh \geq$\\exh\_min?};
+  \node[decision, below=0.8cm of d4] (d5) {$c_{\text{fund}} \geq$\\fund\_min?\textsuperscript{v2}};
+  \node[decision, below=0.8cm of d5] (d6) {$\dot{x}_{\text{premium}}$\\$\leq 0$?};
+  \node[decision, below=0.8cm of d6] (d7) {Variant\\thresholds?};
+  \node[decision, below=0.8cm of d7] (d8) {$P > \text{SMA}_{24\text{h}}$?};
+  \node[decision, below=0.8cm of d8] (d9) {NOT\\R\'egimen A?};
+  \node[decision, below=0.8cm of d9] (d10) {Concurrent\\$<$ max?\textsuperscript{v2}};
+
+  \node[startstop, below=0.8cm of d10, fill=cgreen!30] (open) {\textbf{OPEN SHORT}};
+
+  % Reject labels
+  \node[alert, right=2cm of d1] (r) {SKIP};
+
+  % Arrows
+  \draw[arrow] (start) -- (d1);
+  \draw[arrow] (d1) -- node[left]{S\'i} (d2);
+  \draw[arrow] (d2) -- node[left]{S\'i} (d3);
+  \draw[arrow] (d3) -- node[left]{S\'i} (d4);
+  \draw[arrow] (d4) -- node[left]{S\'i} (d5);
+  \draw[arrow] (d5) -- node[left]{S\'i} (d6);
+  \draw[arrow] (d6) -- node[left]{S\'i} (d7);
+  \draw[arrow] (d7) -- node[left]{S\'i} (d8);
+  \draw[arrow] (d8) -- node[left]{S\'i} (d9);
+  \draw[arrow] (d9) -- node[left]{S\'i} (d10);
+  \draw[arrow] (d10) -- node[left]{S\'i} (open);
+
+  % Reject arrows (all go right to SKIP)
+  \draw[arrow] (d1) -- node[above]{No} (r);
+  \draw[arrow, cred] (d2.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d3.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d4.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d5.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d6.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d7.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d8.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d9.east) -- ++(1.3,0) |- (r);
+  \draw[arrow, cred] (d10.east) -- ++(1.3,0) |- (r);
+
+\end{tikzpicture}
+\caption{Flujo de decisi\'on de entrada. Notas: \textsuperscript{v2}~indica checks
+a\~nadidos en v2. Todos los ``No'' resultan en SKIP (no entry).}
+\label{fig:entry_flow}
+\end{figure}
+
+\subsection{Sizing de Posici\'on}
+
+El tama\~no de posici\'on se calcula como:
+\begin{equation}
+\text{Notional} = f_{\text{capital}} \times \text{Equity} \times L
+\label{eq:sizing}
+\end{equation}
+donde $f_{\text{capital}}$ es la fracci\'on de capital (5\% base) y $L$ es el
+apalancamiento. En la variante \textit{aggressive} (v2+), si $\score \geq 4.5$
+se usa $f_{\text{capital}} = 7.5\%$.
+
+\subsection{R\'egimen A (Supresi\'on de Entrada)}
+
+Se rechaza la entrada si se detecta un r\'egimen alcista correlacionado:
+\begin{equation}
+\text{R\'egimen A} \iff \Delta\text{OI}_{1\text{h}} > 0 \;\wedge\; \eta > 60\% \;\wedge\; V/\bar{V} > 3\times
+\end{equation}
+En este r\'egimen, $F_{\text{ext}}$ domina y el spring no revertir\'a.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Flujo de Evaluaci\'on de Salida}
+\label{sec:exit}
+% ═══════════════════════════════════════════════════════════════
+
+Una vez abierto un trade, se eval\'uan m\'ultiples condiciones de salida
+cada 5 segundos. La Figura~\ref{fig:exit_flow} muestra el flujo.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.75cm, font=\scriptsize]
+
+  \node[startstop] (start) {evaluate\_exit(trade)};
+
+  % ─── Partial TP check (first) ───
+  \node[decision, below=0.7cm of start, aspect=3] (ptp) {MFE $\geq$\\partial\_tp\_mfe?};
+  \node[process, right=2.5cm of ptp, fill=corange!20] (dopartial) {Partial TP\\(cerrar 33\%)};
+
+  % ─── Main exit checks ───
+  \node[decision, below=0.9cm of ptp, aspect=2.5] (ea) {Early\\Abort?};
+  \node[decision, below=0.7cm of ea, aspect=2.5] (trail) {Trailing\\Stop?};
+  \node[decision, below=0.7cm of trail, aspect=2.5] (plock) {Profit\\Lock?};
+  \node[decision, below=0.7cm of plock, aspect=2.5] (oi) {OI\\Abort?};
+  \node[decision, below=0.7cm of oi, aspect=2.5] (sl) {Stop\\Loss?};
+  \node[decision, below=0.7cm of sl, aspect=2.5] (tp) {Take\\Profit?};
+  \node[decision, below=0.7cm of tp, aspect=2.5] (mh) {Max\\Hold?};
+  \node[decision, below=0.7cm of mh, aspect=2.5] (pump) {Pump\\Capture?};
+  \node[decision, below=0.7cm of pump, aspect=2.5] (rev) {Reversal?};
+
+  \node[startstop, below=0.7cm of rev, fill=cblue!15] (hold) {HOLD (continuar)};
+
+  % Exit node
+  \node[alert, right=3cm of sl] (close) {\textbf{CLOSE}\\(exit\_reason)};
+
+  % Arrows
+  \draw[arrow] (start) -- (ptp);
+  \draw[arrow] (ptp) -- node[above]{S\'i} (dopartial);
+  \draw[arrow] (ptp) -- node[left]{No} (ea);
+  \draw[arrow] (dopartial) |- (ea);
+
+  \draw[arrow] (ea) -- node[left]{No} (trail);
+  \draw[arrow] (trail) -- node[left]{No} (plock);
+  \draw[arrow] (plock) -- node[left]{No} (oi);
+  \draw[arrow] (oi) -- node[left]{No} (sl);
+  \draw[arrow] (sl) -- node[left]{No} (tp);
+  \draw[arrow] (tp) -- node[left]{No} (mh);
+  \draw[arrow] (mh) -- node[left]{No} (pump);
+  \draw[arrow] (pump) -- node[left]{No} (rev);
+  \draw[arrow] (rev) -- node[left]{No} (hold);
+
+  % Close arrows
+  \draw[arrow, cred] (ea.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (trail.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (plock.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (oi.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (sl.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (tp.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (mh.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (pump.east) -- ++(0.8,0) |- (close);
+  \draw[arrow, cred] (rev.east) -- ++(0.8,0) |- (close);
+
+\end{tikzpicture}
+\caption{Flujo de evaluaci\'on de salida. Cada condici\'on se eval\'ua secuencialmente;
+la primera que se cumple cierra el trade con el \code{exit\_reason} correspondiente.}
+\label{fig:exit_flow}
+\end{figure}
+
+\subsection{Condiciones de Salida}
+
+\begin{table}[H]
+\centering
+\caption{Condiciones de salida y sus par\'ametros.}
+\label{tab:exits}
+\begin{tabularx}{\textwidth}{llXl}
+\toprule
+\textbf{Exit} & \textbf{Condici\'on} & \textbf{L\'ogica} & \textbf{AEPS?} \\
+\midrule
+Stop Loss & PnL\% $\leq -$SL & P\'erdida m\'axima tolerada & \checkmark \\
+Take Profit & PnL\% $\geq$ TP & Ganancia objetivo (hard cap) & --- \\
+Max Hold & hold $\geq$ max\_h & Timeout m\'aximo & --- \\
+OI Abort & $\Delta$OI$_{\text{entry}\to\text{now}}$ $>$ abort\_pct & Circuito de OI (contra-tendencia) & --- \\
+Early Abort & hold $>$ h AND MFE $<$ m AND PnL $<$ l & Trade muerto, no progresa & \checkmark \\
+Trailing Stop & PnL $<$ MFE $\times$ (1 $-$ callback) & Trailing desde MFE (activa en MFE $\geq$ trail\_act) & \checkmark \\
+Profit Lock & partial\_tp AND PnL $\leq$ lock\_pct & Piso de ganancia tras TP parcial & \checkmark \\
+Breakeven & MFE $\geq$ be\_trigger $\to$ SL $=$ 0 & Mover SL a breakeven & \checkmark \\
+Pump Capture & MFE $\geq$ 0.5$|\Delta P_{24\text{h}}|$ AND $\exh \geq 2$ & Captur\'o el pump, exhaustion indica reversi\'on & --- \\
+Reversal & hold $\geq$ min AND PnL $>$ 1\% AND $\Delta$OI$>$0 AND $\eta>$55\% & Funding spring reverting & --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Partial Take Profit + Profit Lock}
+
+El esquema MAX (v3+) implementa cierre parcial con piso de ganancia:
+
+\begin{enumerate}[leftmargin=2em]
+\item Cuando MFE $\geq$ \param{partial\_tp\_mfe\_pct} (default 1.5\%):
+  \begin{itemize}
+    \item Cerrar \param{partial\_tp\_fraction} de la posici\'on (33\%)
+    \item Activar \param{profit\_lock\_pct} como piso (0.5\%)
+  \end{itemize}
+\item El resto de la posici\'on permanece con trailing + profit lock
+\item Si PnL cae por debajo del profit lock $\to$ cierre total
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Sistema AEPS (Adaptive Exit Parameter System)}
+\label{sec:aeps}
+% ═══════════════════════════════════════════════════════════════
+
+AEPS es el sistema de calibraci\'on din\'amica de par\'ametros de salida
+introducido en v4. Cada variante mantiene un calibrador independiente
+que ajusta los par\'ametros bas\'andose en la distribuci\'on emp\'irica
+de los \'ultimos $N=25$ trades.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm, font=\small]
+
+  % ─── Trade closes ───
+  \node[process, minimum width=4.5cm] (close) {Trade se cierra\\$\to$ \code{TradeRecord}};
+
+  \node[process, below=0.8cm of close, minimum width=5cm, fill=cpurple!15] (calib)
+    {\textbf{AdaptiveExitCalibrator}\\Rolling window (N=25)};
+
+  \node[decision, below=1cm of calib, aspect=3] (check) {$n \geq 15$?};
+
+  \node[process, below left=1cm and 0.5cm of check, fill=cgray!20] (static) {Par\'ametros\\est\'aticos (config)};
+  \node[process, below right=1cm and 0.5cm of check, fill=cpurple!20] (recalib) {\textbf{Recalibrar}\\(percentiles)};
+
+  \node[process, below=2.5cm of check, minimum width=5cm, fill=cblue!15] (blend) {Blend: $\alpha \cdot \text{adaptive} + (1-\alpha) \cdot \text{static}$\\$\alpha = \frac{n - 15}{10}$ (0.0 $\to$ 1.0)};
+
+  \node[process, below=0.8cm of blend, minimum width=4cm, fill=corange!15] (atr) {ATR Scaling\\(volatilidad actual vs mediana)};
+
+  \node[process, below=0.8cm of atr, minimum width=4cm, fill=cgreen!15] (guard) {Guardrails\\(clamp a bounds)};
+
+  \node[startstop, below=0.8cm of guard] (out) {\textbf{AdaptiveParams} $\to$ evaluate\_exit()};
+
+  % Arrows
+  \draw[arrow] (close) -- (calib);
+  \draw[arrow] (calib) -- (check);
+  \draw[arrow] (check) -- node[left]{No} (static);
+  \draw[arrow] (check) -- node[right]{S\'i} (recalib);
+  \draw[arrow] (static) |- (blend);
+  \draw[arrow] (recalib) |- (blend);
+  \draw[arrow] (blend) -- (atr);
+  \draw[arrow] (atr) -- (guard);
+  \draw[arrow] (guard) -- (out);
+
+\end{tikzpicture}
+\caption{Flujo del sistema AEPS. El calibrador procesa cada trade cerrado y
+produce par\'ametros adaptativos para el pr\'oximo trade.}
+\label{fig:aeps_flow}
+\end{figure}
+
+\subsection{TradeRecord}
+
+Cada trade cerrado genera un registro con 10 campos:
+
+\begin{table}[H]
+\centering
+\caption{Campos del TradeRecord alimentado al calibrador.}
+\begin{tabular}{lll}
+\toprule
+\textbf{Campo} & \textbf{Tipo} & \textbf{Descripci\'on} \\
+\midrule
+\code{mfe\_pct} & float & Max Favorable Excursion (\%) \\
+\code{mae\_pct} & float & Max Adverse Excursion (\%) \\
+\code{etd\_pct} & float & End Trade Drawdown = MFE $-$ PnL \\
+\code{pnl\_pct} & float & P\&L realizado (\%) \\
+\code{atr\_at\_entry} & float & ATR\% al momento de entrada \\
+\code{time\_to\_mfe\_secs} & float & Segundos hasta alcanzar MFE \\
+\code{hold\_secs} & float & Duraci\'on total del trade \\
+\code{exit\_reason} & string & Raz\'on de cierre \\
+\code{score\_at\_entry} & float & Score $\score$ al entrar \\
+\code{is\_winner} & bool & PnL $> 0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{F\'ormulas de Recalibraci\'on}
+
+Las f\'ormulas basadas en percentiles de la ventana deslizante:
+
+\begin{table}[H]
+\centering
+\caption{F\'ormulas de recalibraci\'on AEPS.}
+\label{tab:aeps_formulas}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Par\'ametro} & \textbf{F\'ormula} & \textbf{Bounds} \\
+\midrule
+\param{stop\_loss} & $P_{75}(|\text{MAE}|_{\text{losers}}) + 0.5\%$ & [2\%, 8\%] \\
+\param{partial\_tp\_mfe} & $P_{25}(\text{MFE}_{\text{winners}})$ & [0.8\%, 4\%] \\
+\param{partial\_tp\_fraction} & fijo 0.33 & [25\%, 50\%] \\
+\param{profit\_lock} & partial\_tp $\times$ 0.5 & [0.3\%, 1.5\%] \\
+\param{breakeven\_trigger} & partial\_tp $\times$ 1.2 & [1\%, 4\%] \\
+\param{trailing\_activation} & $P_{50}(\text{MFE}_{\text{winners}})$ & [2\%, 8\%] \\
+\param{trailing\_callback} & $\text{median}\left(\frac{\text{ETD}}{\text{MFE}}\right)_{\text{winners}}$ & [30\%, 65\%] \\
+\param{early\_abort\_hours} & $P_{75}(t_{\text{MFE,losers}}) / 3600$ & [0.75h, 3h] \\
+\param{early\_abort\_max\_mfe} & $P_{90}(\text{MFE}_{\text{losers}})$ & [0.3\%, 1.2\%] \\
+\param{early\_abort\_max\_loss} & $-P_{50}(|\text{MAE}|_{\text{losers}}) \times 0.5$ & [$-$3\%, $-$1\%] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{ATR Scaling}
+
+Los par\'ametros se escalan por la volatilidad actual:
+\begin{equation}
+\text{param}_{\text{scaled}} = \text{param}_{\text{base}} \times \frac{\text{ATR}_{\text{actual}}}{\text{ATR}_{\text{mediana}}}
+\label{eq:atr_scaling}
+\end{equation}
+donde ATR se calcula como Average True Range de 14 per\'iodos horarios.
+Si el mercado est\'a m\'as vol\'atil que lo habitual, se relajan SL y trailing;
+si est\'a tranquilo, se ajustan.
+
+\subsection{Guardrails}
+
+Todos los par\'ametros tienen bounds m\'inimos y m\'aximos (Tabla~\ref{tab:aeps_formulas},
+columna Bounds) para prevenir degeneraci\'on.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Las 4 Variantes}
+\label{sec:variants}
+% ═══════════════════════════════════════════════════════════════
+
+El bot ejecuta 4 variantes simult\'aneas, cada una con perfiles distintos
+de riesgo/retorno:
+
+\begin{table}[H]
+\centering
+\caption{Comparaci\'on de las 4 variantes.}
+\label{tab:variants}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Par\'ametro} & \textbf{Conservative} & \textbf{Base} & \textbf{Aggressive} & \textbf{High Energy} \\
+\midrule
+$\score_{\min}$ & 2.5 & 2.5 & 4.0 & 2.5 \\
+$r_{\min}$ & 0.015\% & 0.01\% & 0.008\% & 0.01\% \\
+$\Delta$OI$_{\min}$ & 8\% & 5\% & 3\% & 10\% \\
+$\Delta P_{\min}$ & 5\% & 3\% & 2\% & 5\% \\
+$V/\bar{V}_{\min}$ & 2$\times$ & 2$\times$ & 2$\times$ & 3$\times$ \\
+Leverage & 3$\times$ & 5$\times$ & 7$\times$ & 5$\times$ \\
+Stop Loss & 3\% & 3.5\% & 5\% & 4\% \\
+Take Profit & 10\% & 15\% & 20\% & 25\% \\
+Max Hold & 36h & 48h & 72h & 24h \\
+Cooldown & 36h & 24h & 12h & 48h \\
+OI Abort & 15\% & 12\% & 10\% & 15\% \\
+\midrule
+\multicolumn{5}{l}{\textit{Caracter\'isticas especiales:}} \\
+$c_{\text{fund}} \geq 0.5$ & --- & --- & \checkmark (v2) & --- \\
+Capital scaling & --- & --- & 7.5\% si $\score \geq 4.5$ & --- \\
+MAX scheme & --- & \checkmark (v3) & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[infobox, title=Perfiles de Variante]
+\begin{description}[leftmargin=1em, font=\bfseries]
+\item[Conservative:] Mayor win rate pero menos oportunidades. Espera movimientos
+  grandes ($\Delta P \geq 5\%$, $\Delta$OI $\geq 8\%$) con leverage bajo (3$\times$).
+\item[Base:] Balanced. Incluye esquema MAX (partial TP + profit lock).
+  Leverage 5$\times$, cooldown 24h.
+\item[Aggressive:] M\'as trades pero filtros de entrada estrictos ($\score \geq 4.0$,
+  $c_{\text{fund}} \geq 0.5$). Leverage 7$\times$, sizing din\'amico por score.
+\item[High Energy:] Entradas raras (requiere setup extremo: $\Delta$OI $\geq 10\%$,
+  $V/\bar{V} \geq 3\times$). Busca targets altos (TP 25\%) con hold corto (24h).
+\end{description}
+\end{tcolorbox}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Evoluci\'on de Versiones}
+\label{sec:versions}
+% ═══════════════════════════════════════════════════════════════
+
+La Figura~\ref{fig:versions} muestra la evoluci\'on del sistema desde v1 hasta v4.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  vbox/.style={
+    rectangle, rounded corners=3pt, minimum width=12cm, 
+    text width=11.5cm, inner sep=8pt, font=\small,
+    draw=#1!70, fill=#1!8, align=left
+  },
+  varrow/.style={-{Stealth[length=4mm]}, line width=1.5pt, #1},
+  node distance=0.6cm
+]
+
+  % ─── v1 ───
+  \node[vbox=v1col] (v1) {
+    \textbf{\Large\color{v1col!80!black} v1 --- Release Inicial}\\[4pt]
+    $\bullet$ Score compuesto de 5 componentes ($\score$)\\
+    $\bullet$ Acumulaci\'on de energ\'ia ($\energy$) con hist\'eresis\\
+    $\bullet$ Exhaustion counter ($\exh$) de 5 indicadores\\
+    $\bullet$ 4 variantes simult\'aneas con par\'ametros fijos\\
+    $\bullet$ Entradas/salidas est\'aticas (SL, TP, max hold, OI abort)\\
+    $\bullet$ Trailing stop + breakeven trigger\\
+    $\bullet$ Paper trading (simulated equity)
+  };
+
+  % ─── v2 ───
+  \node[vbox=v2col, below=0.6cm of v1] (v2) {
+    \textbf{\Large\color{v2col!80!black} v2 --- Optimization Pass}\\[4pt]
+    $\bullet$ \textbf{Concurrent entry throttle}: m\'ax 2 entries en ventana de 2h\\
+    $\bullet$ \textbf{Funding score hard filter} (aggressive): $c_{\text{fund}} \geq 0.5$\\
+    $\bullet$ \textbf{Capital scaling} (aggressive): 5\% $\to$ 7.5\% si $\score \geq 4.5$\\
+    $\bullet$ \textbf{Score threshold} (aggressive): 2.5 $\to$ 4.0 (trades $<$4 neto negativo)\\
+    $\bullet$ \textbf{SL tightening} (aggressive): 7\% $\to$ 5\% (MAE losers $\approx$ 6.2\%)\\
+    $\bullet$ \textbf{Exhaustion min}: 2 $\to$ 3 (todas las variantes)\\
+    $\bullet$ \textbf{Min hold}: 1h $\to$ 4h (evitar salidas prematuras)\\
+    $\bullet$ \textbf{Premium velocity gate}: $\dot{x} > 0 \to$ skip entry\\
+    $\bullet$ \textbf{OI abort relajado}: umbrales m\'as permisivos (altcoins)
+  };
+
+  % ─── v3 ───
+  \node[vbox=v3col, below=0.6cm of v2] (v3) {
+    \textbf{\Large\color{v3col!80!black} v3 --- MAX Exit Scheme (Base)}\\[4pt]
+    $\bullet$ \textbf{Partial TP}: cerrar 33\% en MFE $\geq$ 1.5\%\\
+    $\bullet$ \textbf{Profit Lock}: piso +0.5\% para el 67\% restante\\
+    $\bullet$ \textbf{Early Abort}: cerrar si 2h + MFE $<$ 0.5\% + PnL $< -$2\%\\
+    $\bullet$ \textbf{Breakeven mejorado}: SL $\to$ entry en MFE $\geq$ 2\%\\
+    $\bullet$ Flag \code{partial\_tp\_taken} para tracking de estado
+  };
+
+  % ─── v4 ───
+  \node[vbox=v4col, below=0.6cm of v3] (v4) {
+    \textbf{\Large\color{v4col!80!black} v4 --- AEPS (Adaptive Exit Parameter System)}\\[4pt]
+    $\bullet$ \textbf{Calibraci\'on din\'amica}: percentiles en ventana deslizante (N=25)\\
+    $\bullet$ \textbf{Warmup blend}: transici\'on gradual static $\to$ adaptive (15-25 trades)\\
+    $\bullet$ \textbf{ATR scaling}: ajuste por volatilidad actual vs hist\'orica\\
+    $\bullet$ \textbf{Guardrails}: bounds m\'in/m\'ax para todos los par\'ametros\\
+    $\bullet$ \textbf{Per-variant calibrators}: calibrador independiente por variante\\
+    $\bullet$ \textbf{Persistencia}: save/load cada 60s (JSON)\\
+    $\bullet$ \textbf{Notificaciones}: Telegram en cada recalibraci\'on
+  };
+
+  % ─── Version arrows ───
+  \draw[varrow=v1col!70] (v1.south) -- (v2.north);
+  \draw[varrow=v2col!70] (v2.south) -- (v3.north);
+  \draw[varrow=v3col!70] (v3.south) -- (v4.north);
+
+\end{tikzpicture}
+\caption{Evoluci\'on del sistema desde v1 hasta v4. Cada versi\'on agrega
+funcionalidad sin romper la anterior.}
+\label{fig:versions}
+\end{figure}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Ciclo de Vida de un Trade}
+\label{sec:lifecycle}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm and 2cm, font=\small]
+
+  % States
+  \node[startstop, minimum width=3cm] (idle) {\textbf{IDLE}\\(monitoreando)};
+
+  \node[process, below=1.5cm of idle, minimum width=4cm, fill=cgreen!15] (entry)
+    {\textbf{ENTRY CHECKS}\\10 condiciones\\(cada 5s)};
+
+  \node[process, right=3cm of entry, minimum width=3.5cm, fill=cblue!15] (open)
+    {\textbf{OPEN}\\Posici\'on activa\\MFE/MAE tracking};
+
+  \node[process, right=3cm of open, minimum width=3.5cm, fill=corange!15] (exit)
+    {\textbf{EXIT EVAL}\\9 condiciones\\(cada 5s)};
+
+  \node[process, below=1.5cm of exit, minimum width=3.5cm, fill=cred!15] (close)
+    {\textbf{CLOSE}\\PnL, fees, equity\\DB update};
+
+  \node[process, below=1.5cm of close, minimum width=3.5cm, fill=cpurple!15] (feed)
+    {\textbf{AEPS FEED}\\TradeRecord\\$\to$ calibrator};
+
+  % Partial TP
+  \node[process, above=1cm of exit, minimum width=3cm, fill=corange!10] (partial)
+    {Partial TP\\(si aplica)};
+
+  % Arrows
+  \draw[arrow] (idle) -- node[left]{entry signal} (entry);
+  \draw[arrow] (entry) -- node[above]{PASS all} (open);
+  \draw[arrow, dashed, cgray] (entry.west) -- ++(-1.5,0) |- node[left,pos=0.25]{FAIL} (idle.west);
+  \draw[arrow] (open) -- node[above]{cada 5s} (exit);
+  \draw[arrow] (exit) -- node[right]{trigger} (close);
+  \draw[arrow, dashed, cgray] (exit.north) -- (partial.south);
+  \draw[arrow, dashed, cgray] (partial.west) -| node[above,pos=0.3]{continua} (open.north);
+  \draw[arrow] (close) -- (feed);
+  \draw[arrow] (feed.west) -| node[left,pos=0.3]{cooldown $\to$ IDLE} (idle.south);
+
+  % Live mode annotation
+  \node[below right=0.2cm and -0.5cm of open, font=\scriptsize\itshape, color=cred] {Live: orden MARKET SHORT};
+  \node[below right=0.2cm and -0.5cm of close, font=\scriptsize\itshape, color=cred] {Live: orden MARKET CLOSE};
+
+\end{tikzpicture}
+\caption{Ciclo de vida de un trade. El flujo IDLE $\to$ ENTRY $\to$ OPEN $\to$ EXIT $\to$ CLOSE $\to$ AEPS
+se repite indefinidamente. Partial TP es un cierre parcial que no termina el trade.}
+\label{fig:lifecycle}
+\end{figure}
+
+\subsection{Detalles del Cierre}
+
+Al cerrar un trade:
+\begin{enumerate}[leftmargin=2em]
+\item Calcular PnL real (con precio de salida)
+\item Deducir comisiones:
+  \begin{itemize}
+    \item \textbf{Live}: Comisi\'on real de Binance (\code{totalCommission})
+    \item \textbf{Paper}: Estimada como $2 \times \text{taker\_fee} \times \text{notional}$
+  \end{itemize}
+\item Actualizar equity de la variante
+\item Verificar \textbf{daily loss halt}: si PnL diario $< -5\%$ equity $\to$ pausar variante
+\item Persistir en DB (\code{close\_virtual\_trade})
+\item Alimentar AEPS (crear \code{TradeRecord}, enviar a calibrador)
+\item Notificar por Telegram (emoji seg\'un resultado)
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Tareas Peri\'odicas}
+\label{sec:periodic}
+% ═══════════════════════════════════════════════════════════════
+
+El recorder ejecuta m\'ultiples tareas en background via \code{asyncio}:
+
+\begin{table}[H]
+\centering
+\caption{Tareas peri\'odicas del sistema.}
+\label{tab:periodic}
+\begin{tabularx}{\textwidth}{llXl}
+\toprule
+\textbf{Tarea} & \textbf{Intervalo} & \textbf{Acci\'on} & \textbf{M\'odulo} \\
+\midrule
+Flush DB & 5s & Batch insert de datos acumulados & db.py \\
+Heartbeat & 30s & Actualizar timestamp en DB (crash detection) & recorder.py \\
+Strategy Eval & 5s & \code{evaluate\_all()}: entries + exits & strategy.py \\
+MFE Persist & 10s & Guardar MFE/MAE de trades abiertos en DB & strategy.py \\
+Strategy Snapshot & 60s & Persistir calibradores AEPS a JSON & strategy.py \\
+Strategy Log & 120s & Log resumen + status file JSON & strategy.py \\
+WS Watchdog & 60s & Verificar que cada WS recibi\'o datos & recorder.py \\
+SD Watchdog & 120s & Verificar salud del systemd service & recorder.py \\
+Status File & 15s & Escribir \code{strategy\_status.json} (para API) & recorder.py \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Modo Live vs Paper}
+\label{sec:modes}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.8cm, font=\small]
+
+  \node[process, minimum width=5cm] (decision) {\textbf{Strategy Decision}\\(open/close/partial)};
+
+  \node[process, below left=1.5cm and 1cm of decision, minimum width=4cm, fill=cblue!15] (paper)
+    {\textbf{Paper Mode}\\Simulaci\'on local\\Equity virtual (\$10,000)};
+
+  \node[process, below right=1.5cm and 1cm of decision, minimum width=4cm, fill=cred!15] (live)
+    {\textbf{Live Mode}\\BinanceTrader\\\'Ordenes reales};
+
+  \node[process, below=1.5cm of paper, minimum width=3.5cm] (paper_db) {DB: virtual\_trades\\PnL estimado\\Fees: $2 \times$ taker $\times$ notional};
+
+  \node[process, below=1.5cm of live, minimum width=3.5cm] (live_db) {DB: virtual\_trades\\PnL real\\Fees: \code{totalCommission}};
+
+  % Arrows
+  \draw[arrow] (decision) -- node[left,font=\scriptsize]{dry-run} (paper);
+  \draw[arrow] (decision) -- node[right,font=\scriptsize]{live} (live);
+  \draw[arrow] (paper) -- (paper_db);
+  \draw[arrow] (live) -- (live_db);
+
+  % Live details
+  \node[right=0.3cm of live, font=\scriptsize, text width=3cm, align=left] {
+    HMAC-SHA256 signing\\
+    \code{recvWindow}: 5000ms\\
+    Hedge mode detection\\
+    \code{newOrderRespType}: FULL
+  };
+
+\end{tikzpicture}
+\caption{Flujo de ejecuci\'on en modo paper vs live.}
+\label{fig:modes}
+\end{figure}
+
+El modo se configura via \file{trading\_config.json} y puede cambiar
+en caliente desde el dashboard (hot-reload sin reiniciar el servicio).
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Flujo de Datos Completo}
+\label{sec:dataflow}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=0.6cm,
+  font=\scriptsize,
+  block/.style={rectangle, rounded corners, draw=cdark, fill=#1, minimum width=2.3cm, minimum height=0.7cm, align=center, font=\scriptsize},
+  data/.style={rectangle, draw=cgray, fill=clight, minimum width=2cm, minimum height=0.5cm, align=center, font=\scriptsize\itshape},
+]
+
+  % ─── Column 1: Data Sources ───
+  \node[block=cblue!20] (ws1) {depth20@100ms};
+  \node[block=cblue!20, below=0.3cm of ws1] (ws2) {aggTrade};
+  \node[block=cblue!20, below=0.3cm of ws2] (ws3) {bookTicker};
+  \node[block=cblue!20, below=0.3cm of ws3] (ws4) {markPrice@1s};
+  \node[block=cgreen!20, below=0.6cm of ws4] (rest1) {OI poll (15s)};
+  \node[block=cgreen!20, below=0.3cm of rest1] (rest2) {Funding (300s)};
+  \node[block=cgreen!20, below=0.3cm of rest2] (rest3) {LSR/Taker (300s)};
+
+  \node[above=0.2cm of ws1, font=\small\bfseries] {Data Sources};
+
+  % ─── Column 2: Processing ───
+  \node[block=corange!20, right=2.5cm of ws2] (router) {Message\\Router};
+  \node[block=corange!20, below=1cm of router] (strat) {Strategy\\Engine};
+
+  % ─── Column 3: Storage ───
+  \node[block=cgreen!15, right=2.5cm of router] (db) {TimescaleDB};
+  \node[data, below=0.5cm of db] (ohlcv) {OHLCV aggs};
+  \node[data, below=0.3cm of ohlcv] (vtrades) {virtual\_trades};
+
+  % ─── Column 4: Output ───
+  \node[block=cpurple!15, right=2cm of db] (api) {FastAPI};
+  \node[block=cyellow!20, below=0.5cm of api] (dash) {Dashboard};
+  \node[block=cyellow!20, below=0.3cm of dash] (report) {Report};
+  \node[block=cred!15, below=0.3cm of report] (tg) {Telegram};
+
+  % ─── Arrows ───
+  \foreach \ws in {ws1,ws2,ws3,ws4} {
+    \draw[arrow, thin] (\ws) -- (router);
+  }
+  \foreach \r in {rest1,rest2,rest3} {
+    \draw[arrow, thin] (\r) -| (router);
+  }
+  \draw[arrow] (router) -- (db);
+  \draw[arrow] (router) -- (strat);
+  \draw[arrow] (strat) -- (db);
+  \draw[arrow, dashed] (strat) -| (tg);
+  \draw[arrow] (db) -- (api);
+  \draw[arrow] (db) -- (ohlcv);
+  \draw[arrow] (db) -- (vtrades);
+  \draw[arrow] (api) -- (dash);
+  \draw[arrow] (api) -- (report);
+
+\end{tikzpicture}
+\caption{Flujo de datos end-to-end: desde streams de Binance hasta dashboards y Telegram.}
+\label{fig:dataflow}
+\end{figure}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Notificaciones y Monitoreo}
+\label{sec:notifications}
+% ═══════════════════════════════════════════════════════════════
+
+El sistema env\'ia notificaciones por Telegram en los siguientes eventos:
+
+\begin{table}[H]
+\centering
+\caption{Eventos notificados por Telegram.}
+\begin{tabular}{lll}
+\toprule
+\textbf{Evento} & \textbf{Emoji} & \textbf{Contenido} \\
+\midrule
+Trade Open & \textsf{RED\_CIRCLE} & Symbol, variante, entry, notional, leverage, score \\
+Trade Close (win) & \textsf{GREEN\_CIRCLE} & Symbol, raz\'on, PnL\%, PnL USD, hold, MFE, MAE \\
+Trade Close (loss) & \textsf{DOWN\_TRIANGLE} & \'Idem \\
+Partial TP & \textsf{RULER} & Symbol, fracci\'on, PnL\%, notional restante \\
+Daily Halt & \textsf{STOP\_SIGN} & Variante, p\'erdida diaria, \% de equity \\
+AEPS Recalibration & \textsf{WRENCH} & Cal\#, N trades, W/L, cambios en par\'ametros \\
+Startup & \textsf{ROCKET} & Modo, cuenta, s\'imbolos, variantes \\
+Config Change & \textsf{GEAR} & Modo/cuenta/variante anterior $\to$ nuevo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Dashboards Web}
+
+Se sirven 3 interfaces HTML via FastAPI:
+\begin{description}[leftmargin=1em]
+\item[\code{/dashboard}] --- Vista operativa: lista de trades, chart de velas por trade,
+  filtros (mode, variant, symbol, status, reason, version), estad\'isticas en vivo.
+\item[\code{/report}] --- An\'alisis de performance: KPIs, equity curve, distribuci\'on
+  de exits, scatter MFE vs MAE, tabla de trades, filtro por versi\'on y modo.
+\item[\code{/chart}] --- Chart multi-serie: OHLCV + OI + Funding Rate superpuestos.
+\end{description}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Despliegue y Operaci\'on}
+\label{sec:deployment}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Infraestructura}
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{Servidor}: Ubuntu Linux
+\item \textbf{Base de datos}: TimescaleDB en Docker (\code{docker-compose.yml})
+\item \textbf{Servicio}: systemd (\code{ws-recorder.service}, \code{ws-recorder-api.service})
+\item \textbf{Reverse proxy}: Caddy (HTTPS, certificados autom\'aticos)
+\item \textbf{Disco}: 4TB dedicado para datos de mercado
+\end{itemize}
+
+\subsection{Tolerancia a Fallos}
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{Crash recovery}: Heartbeat en DB; al reiniciar, detecta si el shutdown
+  fue limpio o crash y recupera estado.
+\item \textbf{WS reconnect}: Backoff exponencial autom\'atico por grupo de WebSockets.
+\item \textbf{WS watchdog}: Cada 60s verifica que cada WS recibi\'o datos; reconecta si inactivo.
+\item \textbf{Signal handling}: SIGTERM/SIGINT $\to$ graceful shutdown (flush DB, persist state).
+\item \textbf{AEPS persistence}: Calibradores guardados cada 60s a JSON; restaurados al reiniciar.
+\end{itemize}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Resumen}
+\label{sec:summary}
+% ═══════════════════════════════════════════════════════════════
+
+El bot $\af$ Bifurcation Short es un sistema completo de trading
+automatizado que:
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Captura} datos de $500+$ s\'imbolos de futuros perpetuos
+  en tiempo real (4 streams WS + 5 pollers REST por s\'imbolo).
+\item \textbf{Calcula} un score de bifurcaci\'on $\score$ basado en
+  5 observables de mercado (funding, OI, precio, taker ratio, volumen).
+\item \textbf{Acumula} energ\'ia temporal $\energy$ mientras el spring
+  permanece invertido ($\score \geq 3$).
+\item \textbf{Detecta} agotamiento $\exh$ del impulso alcista mediante
+  5 indicadores de reversi\'on.
+\item \textbf{Ejecuta} entradas short tras pasar 10 filtros secuenciales,
+  con 4 variantes simult\'aneas de distinto riesgo/retorno.
+\item \textbf{Gestiona} salidas con 9+ condiciones (SL, TP, trailing,
+  breakeven, partial TP, profit lock, early abort, OI abort, etc.).
+\item \textbf{Adapta} par\'ametros de salida din\'amicamente (AEPS v4)
+  bas\'andose en percentiles de la distribuci\'on emp\'irica de trades.
+\item \textbf{Opera} en modo paper (simulado) o live (\'ordenes reales
+  en Binance Futures) con switch din\'amico.
+\item \textbf{Notifica} cada evento relevante por Telegram y provee
+  dashboards web interactivos para an\'alisis.
+\end{enumerate}
+
+La evoluci\'on v1 $\to$ v4 refleja un proceso iterativo de optimizaci\'on
+basado en datos reales: v2 a\~nadi\'o throttling y optimizaciones de par\'ametros;
+v3 introdujo el esquema MAX de salida; v4 hace que todos los par\'ametros
+de salida se auto-calibren emp\'iricamente.
+
+
+\end{document}
