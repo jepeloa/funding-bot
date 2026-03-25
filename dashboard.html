@@ -75,6 +75,10 @@
   .filter-bar { padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .filter-bar select, .filter-bar input { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
   .filter-bar label { font-size: 11px; color: var(--text2); }
+  .ver-toggles { display:flex; gap:4px; flex:1; }
+  .ver-btn { padding:3px 10px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text2); font-size:11px; font-weight:600; cursor:pointer; transition:all 0.15s; }
+  .ver-btn.active { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .ver-btn:hover:not(.active) { background:rgba(88,166,255,0.12); }
 
   /* ── Main content ── */
   .main-area { display: flex; flex-direction: column; overflow: hidden; grid-row: 1 / -1; }
@@ -176,6 +180,14 @@
     <div class="sidebar-section">
       <h3>Filters</h3>
       <div style="display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="min-width:50px;">Version</label>
+          <div class="ver-toggles" id="f-version">
+            <button class="ver-btn active" data-ver="v2">v2</button>
+            <button class="ver-btn active" data-ver="v3">v3</button>
+            <button class="ver-btn active" data-ver="v4">v4</button>
+          </div>
+        </div>
         <div style="display:flex; align-items:center; gap:6px;">
           <label style="min-width:50px;">Mode</label>
           <select id="f-mode" style="flex:1;">
@@ -498,6 +510,13 @@ function setupFilters() {
   ['f-mode', 'f-variant', 'f-symbol', 'f-status', 'f-reason'].forEach(id => {
     document.getElementById(id).addEventListener('change', applyFilters);
   });
+
+  document.querySelectorAll('#f-version .ver-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.classList.toggle('active');
+      applyFilters();
+    });
+  });
 }
 
 function applyFilters() {
@@ -506,8 +525,10 @@ function applyFilters() {
   const symbol = document.getElementById('f-symbol').value;
   const status = document.getElementById('f-status').value;
   const reason = document.getElementById('f-reason').value;
+  const activeVersions = new Set([...document.querySelectorAll('#f-version .ver-btn.active')].map(b => b.dataset.ver));
 
   let filtered = allTrades;
+  filtered = filtered.filter(t => activeVersions.has(t.strategy_version));
   if (mode) filtered = filtered.filter(t => (t.trading_mode || 'paper') === mode);
   if (variant) filtered = filtered.filter(t => t.variant === variant);
   if (symbol) filtered = filtered.filter(t => t.symbol === symbol);

@@ -87,6 +87,11 @@
   .mode-tab[data-mode="live"].active { background: #ef4444; }
   .mode-tab:hover:not(.active) { background: rgba(88,166,255,0.1); }
   .mode-tab .count { font-size: 11px; opacity: 0.7; margin-left: 4px; }
+  .filter-row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-label { font-size: 12px; color: var(--text2); font-weight: 600; }
+  .ver-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text2); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .ver-btn.active { background: var(--purple); color: #fff; border-color: var(--purple); }
+  .ver-btn:hover:not(.active) { background: rgba(188,140,255,0.12); }
 </style>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -138,8 +143,13 @@
     </div>
   </div>
 
-  <!-- Mode Filter Tabs -->
-  <div class="mode-tabs" id="mode-tabs"></div>
+  <!-- Version Filter + Mode Filter Tabs -->
+  <div class="filter-row">
+    <span class="filter-label">Version:</span>
+    <div style="display:flex;gap:4px;" id="ver-tabs"></div>
+    <span style="width:1px;height:20px;background:var(--border);margin:0 4px;"></span>
+    <div class="mode-tabs" id="mode-tabs" style="margin-bottom:0;"></div>
+  </div>
 
   <!-- KPI Cards -->
   <div class="grid grid-4" id="kpi-cards"><div class="loading">Cargando...</div></div>
@@ -242,12 +252,14 @@ let trades = [];
 let activeEquityVariant = 'all';
 let activeTableVariant = 'all';
 let activeMode = 'all';
+let activeVersions = new Set(['v2', 'v3', 'v4']);
 let refreshTimer = null;
 let binanceAccounts = [];
 
 function getFilteredTrades() {
-  if (activeMode === 'all') return trades;
-  return trades.filter(t => t.tradingMode === activeMode);
+  let ft = trades.filter(t => activeVersions.has(t.version));
+  if (activeMode !== 'all') ft = ft.filter(t => t.tradingMode === activeMode);
+  return ft;
 }
 
 function getActiveVariants() {
@@ -264,10 +276,37 @@ function updateSubtitle() {
     `v2${modeLabel} | ${closed.length} closed, ${open.length} open | Updated: ${new Date().toLocaleString('es-AR')}`;
 }
 
+function reRenderAll() {
+  renderVersionTabs();
+  renderModeTabs();
+  updateSubtitle();
+  renderKPIs(); renderVariantCards(); drawEquityChart();
+  drawExitChart(); drawSymbolChart(); drawScatterChart();
+  renderWLStats(); renderTradeTable(); loadExitSignals();
+}
+
+function renderVersionTabs() {
+  const el = document.getElementById('ver-tabs');
+  const versions = ['v2', 'v3', 'v4'];
+  el.innerHTML = versions.map(v => {
+    const count = trades.filter(t => t.version === v).length;
+    return `<button class="ver-btn ${activeVersions.has(v) ? 'active' : ''}" data-ver="${v}">${v}<span class="count">(${count})</span></button>`;
+  }).join('');
+  el.querySelectorAll('.ver-btn').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.ver;
+      if (activeVersions.has(v)) activeVersions.delete(v);
+      else activeVersions.add(v);
+      reRenderAll();
+    })
+  );
+}
+
 function renderModeTabs() {
-  const paperCount = trades.filter(t => t.tradingMode === 'paper').length;
-  const liveCount = trades.filter(t => t.tradingMode === 'live').length;
-  const allCount = trades.length;
+  const verFiltered = trades.filter(t => activeVersions.has(t.version));
+  const paperCount = verFiltered.filter(t => t.tradingMode === 'paper').length;
+  const liveCount = verFiltered.filter(t => t.tradingMode === 'live').length;
+  const allCount = verFiltered.length;
   const el = document.getElementById('mode-tabs');
   const opts = [
     { key: 'all',   label: 'All',   count: allCount },
@@ -280,11 +319,7 @@ function renderModeTabs() {
   el.querySelectorAll('.mode-tab').forEach(tab =>
     tab.addEventListener('click', () => {
       activeMode = tab.dataset.mode;
-      renderModeTabs();
-      updateSubtitle();
-      renderKPIs(); renderVariantCards(); drawEquityChart();
-      drawExitChart(); drawSymbolChart(); drawScatterChart();
-      renderWLStats(); renderTradeTable(); loadExitSignals();
+      reRenderAll();
     })
   );
 }
@@ -448,7 +483,7 @@ async function fetchTrades() {
   const resp = await fetch(`${BASE}/vtrades?limit=500`, { headers });
   const data = await resp.json();
   const nowSec = Date.now() / 1000;
-  return data.filter(t => t.strategy_version === 'v2' || t.strategy_version === 'v3' || t.strategy_version === 'v4').map(t => {
+  return data.map(t => {
     let snap = t.entry_snapshot || {};
     if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch(e) { snap = {}; } }
     const isOpen = t.status === 'open';
@@ -1203,6 +1238,7 @@ async function loadData() {
     trades = await fetchTrades();
     updateSubtitle();
 
+    renderVersionTabs();
     renderModeTabs();
     renderKPIs();
     renderVariantCards();
