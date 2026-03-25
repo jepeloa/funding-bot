@@ -448,7 +448,7 @@ async function fetchTrades() {
   const resp = await fetch(`${BASE}/vtrades?limit=500`, { headers });
   const data = await resp.json();
   const nowSec = Date.now() / 1000;
-  return data.filter(t => t.strategy_version === 'v2' || t.strategy_version === 'v3').map(t => {
+  return data.filter(t => t.strategy_version === 'v2' || t.strategy_version === 'v3' || t.strategy_version === 'v4').map(t => {
     let snap = t.entry_snapshot || {};
     if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch(e) { snap = {}; } }
     const isOpen = t.status === 'open';

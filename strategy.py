@@ -24,6 +24,7 @@ from typing import Optional
 
 from config import (
     STRATEGY,
+    STRATEGY_VERSION,
     VARIANTS,
     INITIAL_CAPITAL,
     TAKER_FEE,
@@ -1850,6 +1851,7 @@ class StrategyEngine:
 
         status = {
             "timestamp": now,
+            "strategy_version": STRATEGY_VERSION,
             "initialized": initialized,
             "total_symbols": len(self.states),
             "trading_mode": self.trading_mode,
