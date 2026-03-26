@@ -1003,8 +1003,13 @@ class StrategyEngine:
                 qty = await self.trader.calc_quantity(
                     state.symbol, notional, price
                 )
-                # Calcular precios TP/SL
-                sl_pct = vparams["stop_loss_pct"]
+                # Calcular precios TP/SL (usar AEPS si disponible)
+                calibrator = self.exit_calibrators.get(vname)
+                if calibrator:
+                    ap = calibrator.get_params(current_atr_pct=state.atr_pct)
+                    sl_pct = ap.stop_loss_pct
+                else:
+                    sl_pct = vparams["stop_loss_pct"]
                 tp_pct = vparams["take_profit_pct"]
                 sl_price = price * (1 + sl_pct)   # SHORT: SL arriba
                 tp_price = price * (1 - tp_pct)   # SHORT: TP abajo
