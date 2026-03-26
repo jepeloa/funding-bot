@@ -1232,6 +1232,22 @@ class StrategyEngine:
         partial_notional = vtrade.entry_notional * fraction
         result = None
 
+        # Safeguard: if live_qty=0 (copy-trading executedQty bug), query Binance
+        if vtrade.trade_mode == "live" and self.trader and close_qty == 0:
+            try:
+                positions = await self.trader.get_positions(state.symbol)
+                if positions:
+                    pos_qty = abs(positions[0]["position_amt"])
+                    if pos_qty > 0:
+                        vtrade.live_qty = pos_qty
+                        close_qty = pos_qty * fraction
+                        log.warning(
+                            f"⚠️ [{vname.upper()}] live_qty was 0, "
+                            f"reconciled from Binance: {pos_qty}"
+                        )
+            except Exception as e:
+                log.warning(f"⚠️ [{vname.upper()}] Could not reconcile live_qty: {e}")
+
         # ── LIVE: cierre parcial en Binance ──
         if vtrade.trade_mode == "live" and self.trader and close_qty > 0:
             try:
