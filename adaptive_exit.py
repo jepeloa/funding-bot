@@ -82,9 +82,9 @@ class AdaptiveExitCalibrator:
         "profit_lock_pct":         (0.003, 0.015),   # 0.3% - 1.5%
         "breakeven_trigger_pct":   (0.01, 0.04),     # 1% - 4%
         "trailing_activation_pct": (0.02, 0.08),     # 2% - 8%
-        "trailing_callback_pct":   (0.30, 0.65),     # 30% - 65%
+        "trailing_callback_pct":   (0.15, 0.65),     # 15% - 65%
         "early_abort_hours":       (0.75, 3.0),      # 45min - 3h
-        "early_abort_max_mfe":     (0.003, 0.012),   # 0.3% - 1.2%
+        "early_abort_max_mfe":     (0.003, 0.01),    # 0.3% - 1.0%
         "early_abort_max_loss":    (-0.03, -0.01),   # -3% a -1%
     }
 
@@ -164,6 +164,74 @@ class AdaptiveExitCalibrator:
         return self._apply_atr_scaling(blended, current_atr_pct)
 
     # ──────────────────────────────────────────────────────────
+    #  Regime shift detection
+    # ──────────────────────────────────────────────────────────
+
+    def _detect_regime_shift(self, trades: list) -> list:
+        """
+        Split-window Z-test on win rate + mean PnL.
+        If a significant shift is detected, return only the recent
+        (post-shift) trades so calibration adapts faster.
+
+        With small N the test has low power — this is intentional:
+        we only react to *large* regime changes to avoid noise.
+        """
+        n = len(trades)
+        if n < self.MIN_TRADES_TO_CALIBRATE + 4:
+            return trades          # not enough data to split
+
+        mid = n // 2
+        first, second = trades[:mid], trades[mid:]
+
+        # ── Win rate Z-test ──
+        w1 = sum(1 for t in first if t.is_winner)
+        w2 = sum(1 for t in second if t.is_winner)
+        n1, n2 = len(first), len(second)
+        p_pool = (w1 + w2) / n
+        se = (p_pool * (1 - p_pool) * (1/n1 + 1/n2)) ** 0.5 if 0 < p_pool < 1 else 0
+
+        wr_shift = False
+        if se > 0:
+            z_wr = (w2/n2 - w1/n1) / se
+            if abs(z_wr) > 1.96:                   # 95% two-sided
+                wr_shift = True
+
+        # ── Mean PnL comparison (Welch's t-like) ──
+        pnl1 = [t.pnl_pct for t in first]
+        pnl2 = [t.pnl_pct for t in second]
+        m1 = sum(pnl1) / n1
+        m2 = sum(pnl2) / n2
+        v1 = sum((x - m1)**2 for x in pnl1) / max(n1 - 1, 1)
+        v2 = sum((x - m2)**2 for x in pnl2) / max(n2 - 1, 1)
+        se_pnl = (v1/n1 + v2/n2) ** 0.5 if (v1 + v2) > 0 else 0
+
+        pnl_shift = False
+        if se_pnl > 0:
+            z_pnl = (m2 - m1) / se_pnl
+            if abs(z_pnl) > 1.96:
+                pnl_shift = True
+
+        if wr_shift or pnl_shift:
+            # Ensure enough data post-shift for valid calibration
+            w_recent = sum(1 for t in second if t.is_winner)
+            l_recent = sum(1 for t in second if not t.is_winner)
+            if w_recent >= 5 and l_recent >= 3:
+                log.warning(
+                    f"⚠️  AEPS REGIME SHIFT detected | "
+                    f"WR: {w1/n1:.0%}→{w2/n2:.0%} "
+                    f"PnL: {m1:+.2%}→{m2:+.2%} | "
+                    f"using last {n2} trades only"
+                )
+                return second
+            else:
+                log.info(
+                    f"AEPS regime shift signal but insufficient recent data "
+                    f"(W={w_recent}, L={l_recent}), using full window"
+                )
+
+        return trades
+
+    # ──────────────────────────────────────────────────────────
     #  CORE: Recalibración basada en distribución empírica
     # ──────────────────────────────────────────────────────────
 
@@ -184,8 +252,13 @@ class AdaptiveExitCalibrator:
           early_abort_loss= −P50(|MAE| losers) × 0.5
         """
         trades = list(self.history)
+        trades = self._detect_regime_shift(trades)   # may shrink window
         winners = [t for t in trades if t.is_winner]
         losers = [t for t in trades if not t.is_winner]
+        # Exclude aborted trades from SL/trailing calibration to prevent
+        # feedback loop: aborted trades have truncated MAE/hold, which would
+        # shrink SL and abort_hours progressively (degeneracy).
+        natural_losers = [t for t in losers if t.exit_reason != "early_abort"]
 
         if len(winners) < 5 or len(losers) < 3:
             log.info(
@@ -196,18 +269,21 @@ class AdaptiveExitCalibrator:
 
         # ── Extraer distribuciones ──
         w_mfe = sorted(t.mfe_pct for t in winners)
-        l_mae = sorted(abs(t.mae_pct) for t in losers)   # positivo
+        # Use natural losers for MAE (aborted MAE is truncated)
+        nl_mae = sorted(abs(t.mae_pct) for t in natural_losers) if natural_losers else sorted(abs(t.mae_pct) for t in losers)
+        # Use ALL losers for MFE (MFE at abort time is real, not truncated)
         l_mfe = sorted(t.mfe_pct for t in losers)
-        l_ttm = sorted(t.time_to_mfe_secs for t in losers if t.time_to_mfe_secs > 0)
+        # Use natural losers for time_to_mfe (aborted ttm is truncated)
+        l_ttm = sorted(t.time_to_mfe_secs for t in natural_losers if t.time_to_mfe_secs > 0)
 
         # Capture ratios de winners (ETD/MFE)
         w_capture = []
         for t in winners:
-            if t.mfe_pct > 0.001:
+            if t.mfe_pct > 0.001 and t.exit_reason != "profit_lock":
                 w_capture.append(t.etd_pct / t.mfe_pct)
 
-        # ── STOP LOSS ──
-        raw_sl = self._pctl(l_mae, 75) + 0.005
+        # ── STOP LOSS ── (uses natural losers to avoid truncated MAE)
+        raw_sl = self._pctl(nl_mae, 75) + 0.005
         new_sl = self._clamp("stop_loss_pct", raw_sl)
 
         # ── PARTIAL TP MFE ──
@@ -226,9 +302,10 @@ class AdaptiveExitCalibrator:
         raw_ta = self._pctl(w_mfe, 50)
         new_ta = self._clamp("trailing_activation_pct", raw_ta)
 
-        # ── TRAILING CALLBACK ──
+        # ── TRAILING CALLBACK ── (P25: tighter capture, breaks autocorrelation
+        #    with trailing_stop exits that have inflated ETD/MFE)
         if w_capture:
-            raw_cb = sorted(w_capture)[len(w_capture) // 2]
+            raw_cb = self._pctl(sorted(w_capture), 25)
         else:
             raw_cb = 0.50
         new_cb = self._clamp("trailing_callback_pct", raw_cb)
@@ -241,12 +318,12 @@ class AdaptiveExitCalibrator:
         new_eah = self._clamp("early_abort_hours", raw_eah)
 
         # ── EARLY ABORT MAX MFE ──
-        raw_eam = self._pctl(l_mfe, 90)
+        # P50 of loser MFE: natural separator between dead trades and reversions
+        raw_eam = self._pctl(l_mfe, 50)
         new_eam = self._clamp("early_abort_max_mfe", raw_eam)
 
-        # ── EARLY ABORT MAX LOSS ──
-        raw_eal = -self._pctl(l_mae, 50) * 0.5
-        new_eal = self._clamp("early_abort_max_loss", raw_eal)
+        # ── EARLY ABORT MAX LOSS ── (deprecated: no longer used in condition)
+        new_eal = self.current.early_abort_max_loss  # preserve last value
 
         # ── PARTIAL TP FRACTION (no cambia con el mercado) ──
         new_ptf = self.current.partial_tp_fraction
@@ -315,10 +392,8 @@ class AdaptiveExitCalibrator:
                                                 params.trailing_activation_pct * scale),
             trailing_callback_pct=params.trailing_callback_pct,
             early_abort_hours=params.early_abort_hours,
-            early_abort_max_mfe=self._clamp("early_abort_max_mfe",
-                                            params.early_abort_max_mfe * scale),
-            early_abort_max_loss=self._clamp("early_abort_max_loss",
-                                             params.early_abort_max_loss * scale),
+            early_abort_max_mfe=params.early_abort_max_mfe,  # no ATR scaling: "dead trade" is signal quality, not vol
+            early_abort_max_loss=params.early_abort_max_loss,  # deprecated, no scaling
             calibration_n=params.calibration_n,
             calibration_time=params.calibration_time,
         )

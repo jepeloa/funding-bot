@@ -959,14 +959,32 @@ async def trade_exit_signals():
             oi_change = (current_oi - entry_oi) / entry_oi if entry_oi > 0 else 0
             oi_change_1h = (current_oi - oi_1h_ago) / oi_1h_ago if oi_1h_ago > 0 else 0
 
-            sl_pct = vparams["stop_loss_pct"]
+            # Try AEPS calibrated params first, fall back to static
+            aeps_path = os.path.join(os.path.dirname(__file__), f"aeps_{vname}.json")
+            aeps_params = None
+            if os.path.exists(aeps_path):
+                try:
+                    import json as _json2
+                    with open(aeps_path) as _af:
+                        aeps_data = _json2.load(_af)
+                    aeps_params = aeps_data.get("current_params", {})
+                except Exception:
+                    pass
+
+            sl_pct = (aeps_params or {}).get("stop_loss_pct") or vparams["stop_loss_pct"]
             tp_pct = vparams["take_profit_pct"]
             max_hold = vparams["max_hold_hours"]
             min_hold = vparams["min_hold_hours"]
             oi_abort_pct = vparams["oi_abort_pct"]
-            trail_act = vparams.get("trailing_activation_pct", 0)
-            breakeven_trig = vparams.get("breakeven_trigger_pct", 0)
-            trail_cb = vparams.get("trailing_callback_pct", 0.5)
+            trail_act = (aeps_params or {}).get("trailing_activation_pct") or vparams.get("trailing_activation_pct", 0)
+            breakeven_trig = (aeps_params or {}).get("breakeven_trigger_pct") or vparams.get("breakeven_trigger_pct", 0)
+            trail_cb = (aeps_params or {}).get("trailing_callback_pct") or vparams.get("trailing_callback_pct", 0.5)
+            ea_hours_aeps = (aeps_params or {}).get("early_abort_hours")
+            ea_loss_aeps = (aeps_params or {}).get("early_abort_max_loss")
+            ea_mfe_aeps = (aeps_params or {}).get("early_abort_max_mfe")
+            pt_mfe_aeps = (aeps_params or {}).get("partial_tp_mfe_pct")
+            pt_frac_aeps = (aeps_params or {}).get("partial_tp_fraction")
+            p_lock_aeps = (aeps_params or {}).get("profit_lock_pct")
 
             # ── Build each exit signal status ──
             signals = []
@@ -1080,8 +1098,8 @@ async def trade_exit_signals():
             })
 
             # 9. Partial TP (MAX scheme)
-            pt_mfe = vparams.get("partial_tp_mfe_pct", 0)
-            pt_frac = vparams.get("partial_tp_fraction", 0)
+            pt_mfe = pt_mfe_aeps if pt_mfe_aeps is not None else vparams.get("partial_tp_mfe_pct", 0)
+            pt_frac = pt_frac_aeps if pt_frac_aeps is not None else vparams.get("partial_tp_fraction", 0)
             if pt_mfe > 0:
                 pt_progress = min(mfe / pt_mfe * 100, 100)
                 signals.append({
@@ -1095,7 +1113,7 @@ async def trade_exit_signals():
                 })
 
             # 10. Profit Lock (post partial TP)
-            p_lock = vparams.get("profit_lock_pct", 0)
+            p_lock = p_lock_aeps if p_lock_aeps is not None else vparams.get("profit_lock_pct", 0)
             if p_lock > 0 and pt_mfe > 0:
                 lock_active = mfe >= pt_mfe  # partial TP already triggered
                 if lock_active:
@@ -1113,9 +1131,9 @@ async def trade_exit_signals():
                 })
 
             # 11. Early Abort (MAX scheme)
-            ea_hours = vparams.get("early_abort_hours", 0)
-            ea_mfe = vparams.get("early_abort_max_mfe", 0)
-            ea_loss = vparams.get("early_abort_max_loss", 0)
+            ea_hours = ea_hours_aeps if ea_hours_aeps is not None else vparams.get("early_abort_hours", 0)
+            ea_mfe = ea_mfe_aeps if ea_mfe_aeps is not None else vparams.get("early_abort_max_mfe", 0)
+            ea_loss = ea_loss_aeps if ea_loss_aeps is not None else vparams.get("early_abort_max_loss", 0)
             if ea_hours > 0:
                 ea_time_pct = min(hold_hours / ea_hours * 100, 100)
                 ea_conds = [hold_hours > ea_hours, mfe < ea_mfe, pnl_pct < ea_loss]
@@ -1482,6 +1500,98 @@ async def strategy_status():
             return _json2.load(f)
     except FileNotFoundError:
         raise HTTPException(503, "Status file not available yet")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  AEPS CALIBRATOR DATA
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/aeps", dependencies=[Depends(verify_api_key)])
+async def aeps_data(
+    variant: str = Query("base", description="Variant name"),
+):
+    """
+    Returns full AEPS calibrator state for a variant, including
+    param evolution history (replayed from trade history).
+    """
+    import json as _json3
+    from adaptive_exit import AdaptiveExitCalibrator, TradeRecord
+    from config import VARIANTS
+
+    base_dir = os.path.dirname(__file__)
+    aeps_path = os.path.join(base_dir, f"aeps_{variant}.json")
+    if not os.path.exists(aeps_path):
+        raise HTTPException(404, f"No AEPS file for variant '{variant}'")
+
+    with open(aeps_path) as f:
+        raw = _json3.load(f)
+
+    vparams = VARIANTS.get(variant, {})
+    history = raw.get("history", [])
+    current = raw.get("current_params", {})
+    cal_count = raw.get("calibration_count", 0)
+
+    # Replay calibration to build param evolution
+    cal = AdaptiveExitCalibrator(vparams)
+    evolution = []
+    static = cal._from_static(vparams)
+
+    PARAM_KEYS = [
+        "stop_loss_pct", "partial_tp_mfe_pct", "profit_lock_pct",
+        "breakeven_trigger_pct", "trailing_activation_pct",
+        "trailing_callback_pct", "early_abort_hours",
+        "early_abort_max_mfe",
+    ]
+
+    # Record static baseline
+    evolution.append({
+        "trade_idx": 0,
+        "label": "static",
+        **{k: getattr(static, k) for k in PARAM_KEYS},
+    })
+
+    for i, t in enumerate(history):
+        rec = TradeRecord(**t)
+        cal.add_trade(rec)
+        snap = {}
+        for k in PARAM_KEYS:
+            snap[k] = getattr(cal.current, k)
+        snap["trade_idx"] = i + 1
+        snap["label"] = t.get("exit_reason", "")
+        snap["is_winner"] = t.get("is_winner", False)
+        snap["pnl_pct"] = t.get("pnl_pct", 0)
+        snap["mfe_pct"] = t.get("mfe_pct", 0)
+        snap["mae_pct"] = t.get("mae_pct", 0)
+        snap["etd_pct"] = t.get("etd_pct", 0)
+        snap["hold_hours"] = t.get("hold_secs", 0) / 3600
+        snap["calibrated"] = len(cal.history) >= cal.MIN_TRADES_TO_CALIBRATE
+        evolution.append(snap)
+
+    # Bounds for the UI
+    bounds = {k: list(v) for k, v in AdaptiveExitCalibrator.BOUNDS.items()
+              if k in PARAM_KEYS}
+
+    # Win rate evolution
+    wins = losses = 0
+    wr_series = []
+    for i, t in enumerate(history):
+        if t.get("is_winner"):
+            wins += 1
+        else:
+            losses += 1
+        wr_series.append({"trade_idx": i + 1, "win_rate": wins / (wins + losses)})
+
+    return {
+        "variant": variant,
+        "current_params": current,
+        "calibration_count": cal_count,
+        "history": history,
+        "evolution": evolution,
+        "bounds": bounds,
+        "win_rate_series": wr_series,
+        "min_trades": AdaptiveExitCalibrator.MIN_TRADES_TO_CALIBRATE,
+        "window_size": AdaptiveExitCalibrator.WINDOW_SIZE,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════

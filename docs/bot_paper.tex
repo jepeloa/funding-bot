@@ -500,7 +500,7 @@ Stop Loss & PnL\% $\leq -$SL & P\'erdida m\'axima tolerada & \checkmark \\
 Take Profit & PnL\% $\geq$ TP & Ganancia objetivo (hard cap) & --- \\
 Max Hold & hold $\geq$ max\_h & Timeout m\'aximo & --- \\
 OI Abort & $\Delta$OI$_{\text{entry}\to\text{now}}$ $>$ abort\_pct & Circuito de OI (contra-tendencia) & --- \\
-Early Abort & hold $>$ h AND MFE $<$ m AND PnL $<$ l & Trade muerto, no progresa & \checkmark \\
+Early Abort & hold $>$ h AND MFE $<$ m & Trade muerto, no progresa & \checkmark \\
 Trailing Stop & PnL $<$ MFE $\times$ (1 $-$ callback) & Trailing desde MFE (activa en MFE $\geq$ trail\_act) & \checkmark \\
 Profit Lock & partial\_tp AND PnL $\leq$ lock\_pct & Piso de ganancia tras TP parcial & \checkmark \\
 Breakeven & MFE $\geq$ be\_trigger $\to$ SL $=$ 0 & Mover SL a breakeven & \checkmark \\
@@ -531,9 +531,22 @@ El esquema MAX (v3+) implementa cierre parcial con piso de ganancia:
 % ═══════════════════════════════════════════════════════════════
 
 AEPS es el sistema de calibraci\'on din\'amica de par\'ametros de salida
-introducido en v4. Cada variante mantiene un calibrador independiente
-que ajusta los par\'ametros bas\'andose en la distribuci\'on emp\'irica
-de los \'ultimos $N=25$ trades.
+introducido en v4 y refinado en v4.1. Cada variante mantiene un calibrador
+independiente (\code{AdaptiveExitCalibrator}) que ajusta los par\'ametros
+de salida bas\'andose en la distribuci\'on emp\'irica de los \'ultimos
+$N=25$ trades cerrados. El principio rector es \textit{``fijar las
+entradas, adaptar las salidas''}: la se\~nal $\score$ permanece
+invariante mientras el sistema de gesti\'on de riesgo se auto-calibra.
+
+No se asume distribuci\'on param\'etrica de los retornos (normal, Student-$t$,
+etc.). En su lugar, AEPS utiliza estad\'istica descriptiva robusta
+--- percentiles de la distribuci\'on emp\'irica de MFE, MAE y ETD ---
+para derivar los umbrales naturales del mercado actual. Esta elecci\'on
+responde al consenso de que los retornos de criptomonedas exhiben
+colas pesadas y saltos discontinuos que invalidan supuestos
+param\'etricos \cite{palazzi2025crypto}.
+
+\subsection{Arquitectura del Calibrador}
 
 \begin{figure}[H]
 \centering
@@ -545,22 +558,29 @@ de los \'ultimos $N=25$ trades.
   \node[process, below=0.8cm of close, minimum width=5cm, fill=cpurple!15] (calib)
     {\textbf{AdaptiveExitCalibrator}\\Rolling window (N=25)};
 
-  \node[decision, below=1cm of calib, aspect=3] (check) {$n \geq 15$?};
+  \node[decision, below=1cm of calib, aspect=3] (regime) {Regime\\shift?};
+
+  \node[process, below right=0.8cm and 0.2cm of regime, fill=cred!15, minimum width=2.5cm] (trim) {Descartar 1\textsuperscript{a} mitad\\usar solo recientes};
+
+  \node[decision, below=2.2cm of regime, aspect=3] (check) {$n \geq 15$?};
 
   \node[process, below left=1cm and 0.5cm of check, fill=cgray!20] (static) {Par\'ametros\\est\'aticos (config)};
   \node[process, below right=1cm and 0.5cm of check, fill=cpurple!20] (recalib) {\textbf{Recalibrar}\\(percentiles)};
 
-  \node[process, below=2.5cm of check, minimum width=5cm, fill=cblue!15] (blend) {Blend: $\alpha \cdot \text{adaptive} + (1-\alpha) \cdot \text{static}$\\$\alpha = \frac{n - 15}{10}$ (0.0 $\to$ 1.0)};
+  \node[process, below=2.5cm of check, minimum width=5cm, fill=cblue!15] (blend) {Warmup blend: $\alpha \cdot \hat\theta + (1-\alpha) \cdot \theta_0$\\$\alpha = \frac{n - 15}{10}$ (0.0 $\to$ 1.0)};
 
   \node[process, below=0.8cm of blend, minimum width=4cm, fill=corange!15] (atr) {ATR Scaling\\(volatilidad actual vs mediana)};
 
   \node[process, below=0.8cm of atr, minimum width=4cm, fill=cgreen!15] (guard) {Guardrails\\(clamp a bounds)};
 
-  \node[startstop, below=0.8cm of guard] (out) {\textbf{AdaptiveParams} $\to$ evaluate\_exit()};
+  \node[startstop, below=0.8cm of guard] (out) {\textbf{AdaptiveParams} $\to$ \code{evaluate\_exit()}};
 
   % Arrows
   \draw[arrow] (close) -- (calib);
-  \draw[arrow] (calib) -- (check);
+  \draw[arrow] (calib) -- (regime);
+  \draw[arrow] (regime) -- node[right]{No} (check);
+  \draw[arrow] (regime) -| node[above]{S\'i} (trim);
+  \draw[arrow] (trim) |- (check);
   \draw[arrow] (check) -- node[left]{No} (static);
   \draw[arrow] (check) -- node[right]{S\'i} (recalib);
   \draw[arrow] (static) |- (blend);
@@ -570,18 +590,51 @@ de los \'ultimos $N=25$ trades.
   \draw[arrow] (guard) -- (out);
 
 \end{tikzpicture}
-\caption{Flujo del sistema AEPS. El calibrador procesa cada trade cerrado y
-produce par\'ametros adaptativos para el pr\'oximo trade.}
+\caption{Flujo del sistema AEPS v4.1. Incluye detecci\'on de cambio de
+r\'egimen, warmup blend, ATR scaling y guardrails.}
 \label{fig:aeps_flow}
 \end{figure}
 
+El flujo completo por cada trade cerrado es:
+
+\begin{enumerate}[leftmargin=2em]
+\item Se construye un \code{TradeRecord} con 10 campos (Tabla~\ref{tab:traderecord})
+      y se agrega a la ventana FIFO de tama\~no $N=25$.
+
+\item \textbf{Detecci\'on de r\'egimen} (\S\ref{sec:regime}): se compara
+      la primera mitad de la ventana con la segunda. Si hay cambio
+      significativo, se descarta la primera mitad.
+
+\item Si $n \geq 15$: se ejecuta \code{\_recalibrate()} sobre la
+      ventana (posiblemente recortada) para producir $\hat\theta$
+      (par\'ametros adaptativos).
+
+\item \textbf{Warmup blend}: si $15 \leq n < 25$, se interpola
+      linealmente entre est\'aticos $\theta_0$ y adaptativos $\hat\theta$:
+      \begin{equation}
+      \theta_{\mathrm{eff}} = (1-\alpha)\,\theta_0 + \alpha\,\hat\theta,
+      \quad \alpha = \frac{n - 15}{10}
+      \label{eq:warmup}
+      \end{equation}
+      Con $n \geq 25$ se usa 100\% adaptativo ($\alpha = 1$).
+
+\item \textbf{ATR Scaling} (\S\ref{sec:atr_scaling}): ajuste por
+      volatilidad actual vs hist\'orica.
+
+\item \textbf{Guardrails} (\S\ref{sec:guardrails}): clamp a bounds
+      para prevenir par\'ametros degenerados.
+\end{enumerate}
+
+
 \subsection{TradeRecord}
+\label{sec:traderecord}
 
 Cada trade cerrado genera un registro con 10 campos:
 
 \begin{table}[H]
 \centering
 \caption{Campos del TradeRecord alimentado al calibrador.}
+\label{tab:traderecord}
 \begin{tabular}{lll}
 \toprule
 \textbf{Campo} & \textbf{Tipo} & \textbf{Descripci\'on} \\
@@ -593,54 +646,207 @@ Cada trade cerrado genera un registro con 10 campos:
 \code{atr\_at\_entry} & float & ATR\% al momento de entrada \\
 \code{time\_to\_mfe\_secs} & float & Segundos hasta alcanzar MFE \\
 \code{hold\_secs} & float & Duraci\'on total del trade \\
-\code{exit\_reason} & string & Raz\'on de cierre \\
+\code{exit\_reason} & string & Raz\'on de cierre (stop\_loss, trailing\_stop, etc.) \\
 \code{score\_at\_entry} & float & Score $\score$ al entrar \\
 \code{is\_winner} & bool & PnL $> 0$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{F\'ormulas de Recalibraci\'on}
+El campo \code{exit\_reason} es cr\'itico para la protecci\'on
+anti-degeneraci\'on (\S\ref{sec:anti_degen}).
 
-Las f\'ormulas basadas en percentiles de la ventana deslizante:
+
+\subsection{F\'ormulas de Recalibraci\'on}
+\label{sec:recalib_formulas}
+
+Las distribuciones emp\'iricas se particionan en \textit{winners}
+(PnL $> 0$) y \textit{losers} (PnL $\leq 0$), y dentro de losers
+se distingue entre \textit{natural losers} (cierre por stop\_loss,
+trailing\_stop, etc.) y \textit{aborted losers} (cierre por
+early\_abort). Esta separaci\'on previene el bucle de retroalimentaci\'on
+descrito en \S\ref{sec:anti_degen}.
 
 \begin{table}[H]
 \centering
-\caption{F\'ormulas de recalibraci\'on AEPS.}
+\caption{F\'ormulas de recalibraci\'on AEPS v4.1. NL = natural losers,
+L = todos los losers, W = winners.}
 \label{tab:aeps_formulas}
 \begin{tabularx}{\textwidth}{lXl}
 \toprule
 \textbf{Par\'ametro} & \textbf{F\'ormula} & \textbf{Bounds} \\
 \midrule
-\param{stop\_loss} & $P_{75}(|\text{MAE}|_{\text{losers}}) + 0.5\%$ & [2\%, 8\%] \\
-\param{partial\_tp\_mfe} & $P_{25}(\text{MFE}_{\text{winners}})$ & [0.8\%, 4\%] \\
+\param{stop\_loss} & $P_{75}(|\text{MAE}|_{\text{NL}}) + 0.5\%$ & [2\%, 8\%] \\
+\param{partial\_tp\_mfe} & $P_{25}(\text{MFE}_{\text{W}})$ & [0.8\%, 4\%] \\
 \param{partial\_tp\_fraction} & fijo 0.33 & [25\%, 50\%] \\
 \param{profit\_lock} & partial\_tp $\times$ 0.5 & [0.3\%, 1.5\%] \\
 \param{breakeven\_trigger} & partial\_tp $\times$ 1.2 & [1\%, 4\%] \\
-\param{trailing\_activation} & $P_{50}(\text{MFE}_{\text{winners}})$ & [2\%, 8\%] \\
-\param{trailing\_callback} & $\text{median}\left(\frac{\text{ETD}}{\text{MFE}}\right)_{\text{winners}}$ & [30\%, 65\%] \\
-\param{early\_abort\_hours} & $P_{75}(t_{\text{MFE,losers}}) / 3600$ & [0.75h, 3h] \\
-\param{early\_abort\_max\_mfe} & $P_{90}(\text{MFE}_{\text{losers}})$ & [0.3\%, 1.2\%] \\
-\param{early\_abort\_max\_loss} & $-P_{50}(|\text{MAE}|_{\text{losers}}) \times 0.5$ & [$-$3\%, $-$1\%] \\
+\param{trailing\_activation} & $P_{50}(\text{MFE}_{\text{W}})$ & [2\%, 8\%] \\
+\param{trailing\_callback} & $P_{25}\!\left(\frac{\text{ETD}}{\text{MFE}}\right)_{\text{W}}$ & [30\%, 65\%] \\
+\param{early\_abort\_hours} & $P_{75}(t_{\text{MFE,NL}}) / 3600$ & [0.75h, 3h] \\
+\param{early\_abort\_max\_mfe} & $P_{50}(\text{MFE}_{\text{L}})$ & [0.3\%, 1.0\%] \\
+\param{early\_abort\_max\_loss}\textsuperscript{$\dagger$} & congelado (deprecated) & --- \\
 \bottomrule
 \end{tabularx}
+
+\vspace{4pt}
+{\small $^\dagger$ Eliminado de la condici\'on de early abort en v4.1.
+El campo se preserva por compatibilidad pero no participa en la evaluaci\'on.}
 \end{table}
 
-\subsection{ATR Scaling}
+\subsubsection{Justificaci\'on de los Percentiles}
 
-Los par\'ametros se escalan por la volatilidad actual:
+La elecci\'on de percentil para cada par\'ametro responde a un
+objetivo espec\'ifico:
+
+\begin{description}[leftmargin=1.5em]
+\item[\param{stop\_loss} --- $P_{75}$:]
+  El 75\% de las p\'erdidas naturales quedan dentro del SL. El buffer
+  de +0.5\% absorbe slippage y spikes de volatilidad. Fundamentado en
+  el framework Bayesiano de m\'aximo drawdown \cite{bayesian_sl}.
+\item[\param{trailing\_callback} --- $P_{25}$:]
+  Se usa el percentil bajo (25) de la distribuci\'on de ETD/MFE en vez
+  de la mediana para romper la autocorrelaci\'on: si se usara P50,
+  los propios trailing exits (que tienen ETD/MFE inflado) retroalimentar\'ian
+  un callback permisivo. P25 fuerza una captura m\'as agresiva del
+  MFE. Emp\'iricamente, redujo el callback de 52\% a 30\%.
+\item[\param{early\_abort\_max\_mfe} --- $P_{50}$:]
+  La mediana de MFE de losers separa naturalmente los trades
+  \textit{muertos} (MFE $\ll$ 1\%) de los que tuvieron excursi\'on
+  antes de revertir (MFE $>$ 2\%). Se us\'o inicialmente P90 pero
+  el valor resultante ($\sim$2.5\%) era demasiado permisivo.
+\item[\param{early\_abort\_hours} --- $P_{75}$:]
+  Solo usa losers \textit{naturales} (no abortados) para evitar
+  que los tiempos truncados de trades abortados compriman el umbral.
+\end{description}
+
+
+\subsection{Protecci\'on Anti-Degeneraci\'on}
+\label{sec:anti_degen}
+
+El early abort introduce un riesgo de bucle de retroalimentaci\'on:
+los trades abortados tienen MAE truncada (no alcanzaron su MAE real)
+y \code{time\_to\_mfe} artificialmente corto. Si estos valores
+alimentan la calibraci\'on sin distinci\'on:
+
 \begin{equation}
-\text{param}_{\text{scaled}} = \text{param}_{\text{base}} \times \frac{\text{ATR}_{\text{actual}}}{\text{ATR}_{\text{mediana}}}
+\text{SL}_{n+1} = f(\text{MAE}_{\text{todos}}) < \text{SL}_n
+\quad \Rightarrow \quad
+\text{m\'as aborts} \quad \Rightarrow \quad
+\text{SL}_{n+2} < \text{SL}_{n+1} \quad \Rightarrow \quad \cdots
+\label{eq:feedback_loop}
+\end{equation}
+
+Para prevenir esta degeneraci\'on progresiva, AEPS separa la poblaci\'on
+de losers:
+
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{MAE y time\_to\_mfe}: usan solo \textit{natural losers}
+  (excluyen \code{exit\_reason = "early\_abort"})
+\item \textbf{MFE de losers}: usa \textit{todos} los losers
+  (el MFE al momento del abort es real, no truncado)
+\end{itemize}
+
+Cuantitativamente, con 2 trades abortados sobre 12 losers la
+distorsi\'on en SL fue de $-0.02\%$ (menor), pero en
+\param{early\_abort\_hours} fue severa: 0.33h con todos los losers
+vs 1.08h con solo naturales.
+
+
+\subsection{Detecci\'on de Cambio de R\'egimen}
+\label{sec:regime}
+
+El calibrador asume estacionariedad local en la ventana de $N$ trades.
+Para detectar violaciones de este supuesto --- por ejemplo, transici\'on
+de mercado trending a ranging --- se implementa un test de split-window:
+
+\begin{enumerate}[leftmargin=2em]
+\item Se divide la ventana en dos mitades: primeros $\lfloor N/2 \rfloor$
+  trades vs \'ultimos $\lceil N/2 \rceil$.
+\item Se aplican dos tests:
+  \begin{itemize}
+    \item \textbf{Z-test de win rate} ($p_1$ vs $p_2$, pooled proportion):
+    \begin{equation}
+    z_{\text{WR}} = \frac{\hat{p}_2 - \hat{p}_1}
+      {\sqrt{\hat{p}(1-\hat{p})\left(\frac{1}{n_1}+\frac{1}{n_2}\right)}},
+    \quad \hat{p} = \frac{w_1+w_2}{n_1+n_2}
+    \end{equation}
+    \item \textbf{Welch $t$-test de PnL medio} ($\bar{x}_1$ vs $\bar{x}_2$):
+    \begin{equation}
+    t_{\text{PnL}} = \frac{\bar{x}_2 - \bar{x}_1}
+      {\sqrt{s_1^2/n_1 + s_2^2/n_2}}
+    \end{equation}
+  \end{itemize}
+\item Si $|z_{\text{WR}}| > 1.96$ o $|t_{\text{PnL}}| > 1.96$
+  (equivalente a $p < 0.05$ bilateral), \textbf{y} la mitad reciente
+  tiene $\geq 5$ winners y $\geq 3$ losers, se recalibra solo con
+  la mitad reciente.
+\end{enumerate}
+
+Con ventanas peque\~nas ($N=25$), el test tiene baja potencia
+intencionalmente: solo detecta cambios de r\'egimen grandes, evitando
+reaccionar al ruido.
+
+
+\subsection{ATR Scaling}
+\label{sec:atr_scaling}
+
+Los par\'ametros sensibles a volatilidad se escalan por la raz\'on
+entre el ATR actual y la mediana hist\'orica:
+\begin{equation}
+\theta_{\text{scaled}} = \text{clamp}\!\left(
+  \theta_{\text{base}} \times \frac{\text{ATR}_{\text{actual}}}{\widetilde{\text{ATR}}_{\text{hist}}},
+  \; [\theta_{\min}, \theta_{\max}]
+\right)
 \label{eq:atr_scaling}
 \end{equation}
-donde ATR se calcula como Average True Range de 14 per\'iodos horarios.
-Si el mercado est\'a m\'as vol\'atil que lo habitual, se relajan SL y trailing;
-si est\'a tranquilo, se ajustan.
+donde el factor de escala se acota a $[0.5, 2.0]$ para evitar
+valores extremos.
+
+Par\'ametros que \textbf{s\'i} escalan con ATR: stop\_loss,
+partial\_tp\_mfe, profit\_lock, breakeven\_trigger, trailing\_activation.
+
+Par\'ametros que \textbf{no} escalan:
+\begin{itemize}[leftmargin=1.5em]
+\item \param{trailing\_callback}: es un ratio (ETD/MFE), ya est\'a
+  normalizado por escala.
+\item \param{early\_abort\_max\_mfe}: detecta si la se\~nal de
+  entrada funcion\'o (calidad de se\~nal, no volatilidad).
+  Un trade muerto es muerto con ATR de 3\% o de 8\%.
+\item \param{early\_abort\_hours}: independiente de la magnitud del
+  movimiento.
+\end{itemize}
+
 
 \subsection{Guardrails}
+\label{sec:guardrails}
 
-Todos los par\'ametros tienen bounds m\'inimos y m\'aximos (Tabla~\ref{tab:aeps_formulas},
-columna Bounds) para prevenir degeneraci\'on.
+Todos los par\'ametros tienen bounds m\'inimos y m\'aximos
+(Tabla~\ref{tab:aeps_formulas}, columna Bounds). Cuando el valor
+raw cae fuera del rango, se fuerza al l\'imite m\'as cercano:
+\begin{equation}
+\theta_{\text{final}} = \max(\theta_{\min}, \min(\theta_{\max}, \theta_{\text{raw}}))
+\end{equation}
+
+Los guardrails cumplen dos roles:
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Seguridad}: impedir par\'ametros que pongan en riesgo
+  el capital (ej: SL $> 8\%$ con 5$\times$ leverage $\to$
+  40\% de p\'erdida por trade).
+\item \textbf{Cold-start}: durante el warmup, los bounds acotan
+  la incertidumbre de los percentiles calculados con pocos datos.
+\end{enumerate}
+
+
+\subsection{Persistencia y Recalibraci\'on Forzada}
+
+El estado completo del calibrador (ventana de trades + par\'ametros
+actuales + contador de calibraciones) se serializa a
+\code{aeps\_\{variante\}.json} en cada recalibraci\'on y al
+cierre del proceso. Al reiniciar, se restaura desde disco y
+se ejecuta una recalibraci\'on forzada inmediata para incorporar
+cualquier cambio en la l\'ogica del calibrador sin esperar al
+pr\'oximo trade.
 
 
 % ═══════════════════════════════════════════════════════════════

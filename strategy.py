@@ -1148,10 +1148,10 @@ class StrategyEngine:
         exit_reason = None
 
         # ── Early Abort (adaptive) ──
+        # v4.1: removed pnl_pct condition — MFE velocity is the causal signal
         if (ap.early_abort_hours > 0
               and hold_hours > ap.early_abort_hours
-              and vtrade.mfe < ap.early_abort_max_mfe
-              and pnl_pct < ap.early_abort_max_loss):
+              and vtrade.mfe < ap.early_abort_max_mfe):
             exit_reason = "early_abort"
 
         # ── Partial TP + Profit Lock (adaptive) ──
@@ -1689,6 +1689,10 @@ class StrategyEngine:
                     self.exit_calibrators[vname] = (
                         AdaptiveExitCalibrator.from_dict(data, vparams)
                     )
+                    # Force recalibration on startup to pick up any AEPS logic changes
+                    cal = self.exit_calibrators[vname]
+                    if len(cal.history) >= cal.MIN_TRADES_TO_CALIBRATE:
+                        cal._recalibrate()
                     log.info(f"♻️ AEPS [{vname}] restaurado: "
                              f"{self.exit_calibrators[vname].status()}")
                 except Exception as e:
