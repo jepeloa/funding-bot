@@ -14,7 +14,7 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "binance_futures")
 DB_USER = os.getenv("DB_USER", "recorder")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "K32CzfnWtWtLoj98n6R5QTqEx3jLYLv5")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "recorder")
 
 # Leer .env si existe
 ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")

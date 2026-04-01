@@ -21,11 +21,11 @@ import os
 import sys
 
 # ─── CONFIG ─────────────────────────────────────────────────────
-DB_HOST = 'localhost'
-DB_PORT = 5432
-DB_NAME = 'binance_futures'
-DB_USER = 'recorder'
-DB_PASS = 'K32CzfnWtWtLoj98n6R5QTqEx3jLYLv5'
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = int(os.getenv('DB_PORT', '5432'))
+DB_NAME = os.getenv('DB_NAME', 'binance_futures')
+DB_USER = os.getenv('DB_USER', 'recorder')
+DB_PASS = os.getenv('DB_PASSWORD', 'recorder')
 
 # Binance fee tiers (USDT-M Futures + Spot)
 # https://www.binance.com/en/fee/trading
