@@ -47,8 +47,8 @@ MAX_RECONNECT_ATTEMPTS = 0
 # ══════════════════════════════════════════════════════════════════
 #  TELEGRAM
 # ══════════════════════════════════════════════════════════════════
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8004368637:AAGqon7LK-z_VG8V5Meg2D2UQg3zFsCiUhg")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "6834861066")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_STATUS_INTERVAL = int(os.getenv("TELEGRAM_STATUS_INTERVAL", "3600"))  # secs
 
 # ══════════════════════════════════════════════════════════════════
@@ -79,7 +79,7 @@ LOG_LEVEL = "INFO"
 # ══════════════════════════════════════════════════════════════════
 INITIAL_CAPITAL = 10_000.0
 TAKER_FEE = 0.0004
-STRATEGY_VERSION = "v3"   # v3 = MAX scheme: partial TP 33%@1.5%, profit lock +0.5%, SL 3.5%, early abort 2h
+STRATEGY_VERSION = "v4"   # v4 = AEPS: Adaptive Exit Parameter System (v3 + dynamic exit calibration)
 
 # ══════════════════════════════════════════════════════════════════
 #  SCORE Ŝ_αf — Umbrales universales (Paper Table 1)
@@ -110,6 +110,8 @@ STRATEGY = {
     # ── Concurrent entry throttle (v2) ──
     "concurrent_entry_max": 2,       # max open trades across all symbols per variant within 2h window
     "concurrent_entry_window_h": 2,  # window to count concurrent entries (hours)
+    # ── Zombie Kill (post-abort MFE filter) ──
+    "mfe_zombie_threshold": 0.012,    # 1.2% — si MFE < esto al expirar abort window → cerrar
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -259,33 +261,33 @@ BINANCE_ACCOUNTS = {
         "label": "Cuenta Principal",
         "api_key": os.getenv(
             "BINANCE_API_KEY",
-            "lSPFfpYRgc8t5fcZo8sMz7tUu6Lxe9Eqjf9sWrZsGjxS2lqVzuNljhWUm2UwK0Ac",
+            "",
         ),
         "api_secret": os.getenv(
             "BINANCE_API_SECRET",
-            "DHTrUkKXe48UV4DQmW6zvSr9HBc1xRccGXcm6Itzk8wTgm02qVHgjlLxc7jA9jUo",
+            "",
         ),
     },
     "copytrading": {
         "label": "Cuenta CopyTrading",
         "api_key": os.getenv(
             "BINANCE_CT_API_KEY",
-            "S9GHdLJOMwhkmwRTmairz4ZlgKm7lEEB2sSlYF7NqxTvGgadahXGXQmALVytqYTv",
+            "",
         ),
         "api_secret": os.getenv(
             "BINANCE_CT_API_SECRET",
-            "c69BGTXj2MdVN7ITJQ48geIl79bIVk4Gh0ikMSjZG7GQIPAGUcQhQWMcrmCXVjgS",
+            "",
         ),
     },
     "copytrading_privado": {
         "label": "CopyTrading Privado",
         "api_key": os.getenv(
             "BINANCE_CTP_API_KEY",
-            "pUbQMizPd79wksXwhMEfjKzsgi7ZH21G1CI1q2SieEaG4fpSRv7jBwKgJuQDC9T8",
+            "",
         ),
         "api_secret": os.getenv(
             "BINANCE_CTP_API_SECRET",
-            "kkQMcbVSRaYlSIXgtU8qXdIleSAUip0Fd9641rXhkqCQxkTBluHx09QQpe3nmlKA",
+            "",
         ),
     },
 }

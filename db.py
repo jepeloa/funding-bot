@@ -370,8 +370,10 @@ class AsyncDBWriter:
                 "exit_time=$1, exit_price=$2, exit_reason=$3, "
                 "pnl_pct=$4, pnl_leveraged=$5, pnl_usd=$6, "
                 "funding_collected=$7, fees_paid=$8, "
-                "mfe_pct=$9, mae_pct=$10, hold_hours=$11, status='closed' "
-                "WHERE id=$12",
+                "mfe_pct=$9, mae_pct=$10, hold_hours=$11, "
+                "partial_tp_triggered=$12, etd_pct=$13, "
+                "atr_at_entry=$14, time_to_mfe_secs=$15, status='closed' "
+                "WHERE id=$16",
                 data["exit_time"],
                 data["exit_price"],
                 data["exit_reason"],
@@ -383,6 +385,10 @@ class AsyncDBWriter:
                 data.get("mfe_pct", 0),
                 data.get("mae_pct", 0),
                 data.get("hold_hours", 0),
+                data.get("partial_tp_triggered", False),
+                data.get("etd_pct"),
+                data.get("atr_at_entry"),
+                data.get("time_to_mfe_secs"),
                 trade_id,
             )
 

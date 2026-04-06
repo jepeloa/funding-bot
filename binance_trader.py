@@ -306,6 +306,34 @@ class BinanceTrader:
         # Colocar TP/SL tras fill confirmado
         fill_status = result.get("status", "")
         filled_qty = float(result.get("executedQty", 0))
+
+        # Copy-trading accounts may return executedQty=0 in the immediate
+        # response even though the order is filled.  Fall back to the
+        # requested qty and, when possible, reconcile from position data.
+        if filled_qty == 0 and result.get("orderId"):
+            log.warning(
+                f"[{self.account_name}] executedQty=0 for orderId="
+                f"{result['orderId']} — using requested qty={qty}"
+            )
+            filled_qty = qty
+            result["executedQty"] = str(qty)
+            # Try to get the real filled qty from positionRisk
+            try:
+                positions = await self.get_positions(sym)
+                if positions:
+                    pos_qty = abs(positions[0]["position_amt"])
+                    if pos_qty > 0:
+                        filled_qty = pos_qty
+                        result["executedQty"] = str(pos_qty)
+                        log.info(
+                            f"[{self.account_name}] Reconciled qty from "
+                            f"position: {pos_qty}"
+                        )
+            except Exception as e:
+                log.warning(
+                    f"[{self.account_name}] Could not reconcile qty: {e}"
+                )
+
         if (take_profit or stop_loss) and fill_status == "FILLED" and filled_qty > 0:
             await self.set_tp_sl(sym, filled_qty, take_profit, stop_loss)
 

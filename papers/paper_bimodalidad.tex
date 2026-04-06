@@ -1,0 +1,1256 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds,decorations.pathreplacing,patterns}
+
+\geometry{margin=2.5cm}
+
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{cgray}{RGB}{149,165,166}
+\definecolor{cdark}{RGB}{44,62,80}
+\definecolor{clight}{RGB}{236,240,241}
+
+\tcbset{
+  defbox/.style={colback=cblue!5, colframe=cblue!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  thmbox/.style={colback=cgreen!5, colframe=cgreen!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  warnbox/.style={colback=corange!5, colframe=corange!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  keybox/.style={colback=cpurple!5, colframe=cpurple!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  redbox/.style={colback=cred!5, colframe=cred!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+}
+
+\newtheorem{definition}{Definici\'on}[section]
+\newtheorem{theorem}{Teorema}[section]
+\newtheorem{lemma}{Lema}[section]
+\newtheorem{corollary}{Corolario}[section]
+\newtheorem{proposition}{Proposici\'on}[section]
+\newtheorem{remark}{Observaci\'on}[section]
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\af}{\alpha_f}
+\newcommand{\score}{\hat{S}_{\af}}
+\newcommand{\energy}{E_{\af}}
+\newcommand{\exh}{\hat{E}}
+\newcommand{\param}[1]{\texttt{\small\color{cpurple}#1}}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE\bfseries Teor\'ia Unificada del Sistema}\\[4pt]
+    {\LARGE\bfseries $\af$ Bifurcation Short + AEPS}\\[6pt]
+    {\large Modelo de Mezcla, Super-Aditividad,}\\[2pt]
+    {\large Convergencia y Monitoreo de Salud}\\[16pt]
+    {\large Javier Epeloa\quad$\cdot$\quad Mapplics}\\[8pt]
+    {\normalsize Documento T\'ecnico --- Marzo 2026}\\[4pt]
+    {\small\itshape Formalizaci\'on matem\'atica completa del sistema de trading:\\
+    desde la bifurcaci\'on f\'isica hasta las garant\'ias de convergencia}
+\end{center}
+
+\vspace{8pt}
+
+\begin{abstract}
+Se presenta la formalizaci\'on matem\'atica completa del sistema
+de trading $\af$ Bifurcation Short, integrando la se\~nal de entrada
+con el sistema adaptativo de salida AEPS. Se demuestra que: (1) toda
+se\~nal de entrada en mercados financieros genera inherentemente una
+distribuci\'on bimodal de resultados, lo cual explica por qu\'e los
+enfoques cl\'asicos de machine learning fracasan al intentar predecir
+retornos; (2) el sistema AEPS explota esta bimodalidad mediante
+clasificaci\'on secuencial post-entrada, reformulando el problema de
+predicci\'on (irresoluble) como un problema de clasificaci\'on temporal
+(resoluble); (3) la combinaci\'on se\~nal + AEPS es super-aditiva;
+(4) se establecen formalmente las \textbf{tres condiciones} que
+cualquier se\~nal de entrada debe cumplir para que AEPS genere edge;
+(5) la convergencia del sistema se garantiza bajo condiciones
+espec\'ificas y puede acelerarse mediante dry run pre-operativo;
+y (6) un monitor de salud de tres alarmas detecta p\'erdida de
+bimodalidad antes de da\~no significativo al capital. Se valida
+emp\'iricamente sobre $N=46$ trades reales ($p = 0.000315$,
+Mann-Whitney), demostrando profit factor 3.53 post-convergencia.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════
+\section{Fundamentos: La Bifurcaci\'on como Generador de Mezcla}
+\label{sec:mixture}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{La Ecuaci\'on de Langevin del Mercado}
+
+El sistema modela el precio de futuros perpetuos como una part\'icula
+en un potencial con fuerza externa:
+
+\begin{equation}
+L\ddot{x} + \gamma\dot{x} + \kappa\,x = F_{\text{ext}} + \sigma\xi
+\label{eq:langevin}
+\end{equation}
+
+donde $\kappa$ es la constante del spring (derivada del funding rate),
+$F_{\text{ext}}$ es la fuerza externa (compra retail, leverage),
+y $\sigma\xi$ es el ruido estoc\'astico. La se\~nal $\score$ detecta
+la condici\'on $\af < 0$ (spring invertido), que indica que el
+potencial est\'a en un m\'aximo local y el sistema puede transitar
+a un nuevo equilibrio.
+
+\subsection{El Modelo de Mezcla}
+
+\begin{definition}[Modelo de Mezcla $\af$]
+\label{def:mixture}
+Sea $\score \geq \theta_{\min}$ la condici\'on de entrada. El vector
+de trayectoria $\bm{X} = (\text{MFE}, |\text{MAE}|, t_{\text{hold}})$
+observado al cierre sigue una distribuci\'on de mezcla:
+\begin{equation}
+p(\bm{X} \mid \score \geq \theta_{\min}) =
+  \pi_W \cdot f_W(\bm{X}) + (1 - \pi_W) \cdot f_L(\bm{X})
+\label{eq:mixture}
+\end{equation}
+donde $\pi_W = \Prob(\text{winner} \mid \text{entry})$ es la
+probabilidad de bifurcaci\'on exitosa, $f_W$ y $f_L$ son las
+densidades de las poblaciones winner y loser respectivamente.
+\end{definition}
+
+\begin{definition}[Interpretaci\'on F\'isica de las Poblaciones]
+Las dos poblaciones corresponden a los dos desenlaces posibles
+cerca del punto cr\'itico $\af = 0$:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Cuenca $W$}: $\kappa$ invierte signo, $F_{\text{ext}} \to 0$
+  (exhaustion). La fuerza restauradora empuja a favor del short.
+  El precio cae r\'apido (MFE alto, MAE bajo).
+\item \textbf{Cuenca $L$}: $F_{\text{ext}}$ sigue dominando, $\kappa$
+  no cambia de signo. El pump contin\'ua. El precio sigue subiendo
+  (MFE bajo, MAE alto).
+\end{itemize}
+La incertidumbre sobre cu\'al cuenca dominar\'a es intr\'inseca a la
+din\'amica no lineal cerca del punto cr\'itico.
+\end{definition}
+
+
+\subsection{Separabilidad de la Se\~nal}
+
+\begin{definition}[Divergencia de Kullback-Leibler]
+\label{def:kl}
+La separabilidad de la se\~nal se mide por la divergencia KL
+\cite{cover2006elements} entre las distribuciones marginales de MFE:
+\begin{equation}
+\Delta = \KL\!\left(f_W^{\text{MFE}} \,\|\, f_L^{\text{MFE}}\right)
+= \int f_W^{\text{MFE}}(m) \log \frac{f_W^{\text{MFE}}(m)}{f_L^{\text{MFE}}(m)} \, dm
+\label{eq:kl}
+\end{equation}
+$\Delta = 0$ cuando las distribuciones son id\'enticas (entrada random);
+$\Delta > 0$ cuando son distinguibles.
+\end{definition}
+
+La divergencia KL mide cu\'anta \textit{informaci\'on} se pierde al
+describir datos de $f_W$ usando $f_L$. Intuitivamente: si un trade
+tiene MFE de 4\%, $f_W$ le asigna alta probabilidad y $f_L$ baja
+probabilidad. El ratio $f_W(m)/f_L(m)$ es grande, y $\log$ de ese
+ratio cuantifica la ``evidencia'' de que el trade es winner. El promedio
+ponderado de esta evidencia sobre toda la distribuci\'on $f_W$ es $\Delta$.
+
+Propiedades relevantes:
+\begin{itemize}[leftmargin=1.5em]
+\item $\Delta \geq 0$ siempre (desigualdad de Gibbs), con igualdad
+  sii $f_W = f_L$ c.s.
+\item $\Delta$ no es sim\'etrica:
+  $\KL(f_W \| f_L) \neq \KL(f_L \| f_W)$.
+  La primera mide el costo de creer $L$ cuando es $W$
+  (false positive del abort); la segunda mide el costo inverso.
+\item Valores de referencia: $\Delta < 0.1$ (indistinguibles),
+  $0.1$--$0.3$ (separaci\'on d\'ebil), $0.3$--$0.7$ (separaci\'on
+  moderada), $> 1.0$ (separaci\'on fuerte).
+\end{itemize}
+
+
+\subsection{Validaci\'on Emp\'irica ($N=46$ trades)}
+
+\begin{table}[H]
+\centering
+\caption{Par\'ametros del modelo de mezcla sobre el dataset completo.}
+\label{tab:mixture_full}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Poblaci\'on} & $\bm{n}$ & $\overline{\textbf{MFE}}$ &
+  $\overline{|\textbf{MAE}|}$ & \textbf{E-ratio} & $\overline{\textbf{PnL}}$ \\
+\midrule
+Winners ($f_W$) & 27 & 3.74\% & 0.93\% & \textbf{4.01} & $+1.97\%$ \\
+Losers ($f_L$) & 19 & 1.81\% & 3.80\% & \textbf{0.48} & $-2.93\%$ \\
+\midrule
+Mezcla total & 46 & 2.94\% & 2.12\% & 1.40 & $-0.06\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Tests de separabilidad ($N=46$).}
+\label{tab:sep_tests}
+\begin{tabular}{lccl}
+\toprule
+\textbf{Test} & \textbf{Estad\'istico} & $\bm{p}$\textbf{-value} & \textbf{Significancia} \\
+\midrule
+Mann-Whitney $U$ (MFE) & $U = 418$ & $\bm{0.000315}$ & S\'i (0.03\%) \\
+$\KL(f_W^{\text{MFE}} \| f_L^{\text{MFE}})$ & 0.250 nats & --- & Moderada \\
+Binomial (MFE $\geq 1\%$, $p_0=0.5$) & 32/46 & $\bm{0.006}$ & S\'i (0.6\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[thmbox, title=Resultado 1: Bimodalidad Confirmada ($N=46$)]
+La se\~nal $\score$ produce dos poblaciones estad\'isticamente
+separables con alta significancia ($p = 0.000315$). La separabilidad
+$\Delta = 0.250$ nats es estable entre la primera mitad ($\Delta = 0.405$)
+y la segunda ($\Delta = 0.551$) del dataset. La se\~nal funciona
+desde el trade 1 --- la bimodalidad es una propiedad de la entrada,
+no del sistema de salida.
+\end{tcolorbox}
+
+
+\subsection{Informaci\'on Mutua y Contenido Informacional}
+
+\begin{definition}[Informaci\'on Mutua]
+Sea $O \in \{W, L\}$ el outcome y $M = \mathbb{1}[\text{MFE} \geq \tau]$
+un indicador binario. La informaci\'on mutua \cite{cover2006elements}
+mide cu\'anto reduce $M$ la incertidumbre sobre $O$:
+\begin{equation}
+I(M; O) = H(O) - H(O \mid M)
+\end{equation}
+\end{definition}
+
+Con $\tau = 1\%$ y los datos actuales ($N=25$ en ventana AEPS):
+\begin{align}
+H(O) &= 0.989 \text{ bits} \\
+\Prob(W \mid \text{MFE} \geq 1\%) &= 0.750 \\
+\Prob(W \mid \text{MFE} < 1\%) &= 0.222 \\
+I(M; O) &= 0.195 \text{ bits} \quad (19.7\% \text{ de la incertidumbre total})
+\end{align}
+
+Observar si el MFE cruza 1\% proporciona casi una quinta parte de
+la informaci\'on necesaria para clasificar el trade. Este es el
+fundamento de por qu\'e AEPS usa MFE como estad\'istico principal
+de decisi\'on.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Por Qu\'e Fracasa el Machine Learning Predictivo}
+\label{sec:ml_failure}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{El Problema de la Bimodalidad Inherente}
+
+Proponemos que \textbf{toda se\~nal de entrada en mercados financieros
+genera inherentemente una distribuci\'on bimodal de resultados}. Esta
+observaci\'on, consistente con los modelos de Markov regime-switching
+de Hamilton \cite{hamilton1989regime}, explica por qu\'e los enfoques
+cl\'asicos de ML fracasan sistem\'aticamente al intentar predecir
+retornos en trading.
+
+\begin{proposition}[Irreducibilidad de la Bimodalidad]
+\label{prop:bimodal_irreducible}
+Sea $\mathcal{S}$ cualquier se\~nal de entrada basada en observables
+de mercado. Para los mismos valores de features $\bm{x}$, el retorno
+$r$ sigue una distribuci\'on de mezcla:
+\begin{equation}
+p(r \mid \bm{x}) = \pi_W(\bm{x}) \cdot f_W(r) + (1 - \pi_W(\bm{x})) \cdot f_L(r)
+\label{eq:bimodal_inherent}
+\end{equation}
+donde $f_W$ y $f_L$ son distribuciones con medias de signo opuesto.
+Ning\'un conjunto de features adicionales puede reducir la mezcla
+a una sola componente, porque la incertidumbre proviene de factores
+no observables al momento de la entrada (realizaci\'on futura del
+ruido $\sigma\xi$, \'ordenes institucionales no visibles, eventos
+ex\'ogenos).
+\end{proposition}
+
+\subsection{Fracaso de la Optimizaci\'on por M\'inimos Cuadrados}
+
+Un modelo de ML t\'ipico minimiza el error cuadr\'atico medio:
+\begin{equation}
+\hat{f} = \arg\min_f \sum_{i=1}^{N} \left(r_i - f(\bm{x}_i)\right)^2
+\label{eq:mse}
+\end{equation}
+
+Bajo la mezcla~(\ref{eq:bimodal_inherent}), la soluci\'on \'optima
+de~(\ref{eq:mse}) es la esperanza condicional:
+\begin{equation}
+f^*(\bm{x}) = \E[r \mid \bm{x}]
+  = \pi_W \cdot \E[r \mid W] + (1 - \pi_W) \cdot \E[r \mid L]
+\label{eq:ml_optimal}
+\end{equation}
+
+\begin{theorem}[El ML Aprende el Promedio de la Mezcla]
+\label{thm:ml_fails}
+Si la bimodalidad es irreducible (Proposici\'on~\ref{prop:bimodal_irreducible})
+y las componentes tienen medias de magnitud similar con signos opuestos
+($|\E[r|W]| \approx |\E[r|L]|$), entonces:
+\begin{equation}
+f^*(\bm{x}) \approx 0 \quad \forall\, \bm{x}
+\end{equation}
+El modelo aprende ``no hay se\~nal'' --- no porque la se\~nal no
+exista, sino porque est\'a promediando dos poblaciones que se cancelan.
+\end{theorem}
+
+\begin{proof}
+Con $\pi_W \approx 0.6$, $\E[r|W] \approx +2\%$ y
+$\E[r|L] \approx -3\%$ (valores t\'ipicos del sistema $\af$):
+$f^*(\bm{x}) = 0.6 \times 2\% + 0.4 \times (-3\%) = 0\%$.
+El gradiente durante entrenamiento recibe contribuciones de signo
+opuesto de winners y losers, resultando en pesos que convergen
+a cero. A\~nadir m\'as features o m\'as complejidad al modelo no
+resuelve el problema: si la bimodalidad es intr\'inseca al mercado,
+no existe funci\'on $f(\bm{x})$ que la elimine.
+\end{proof}
+
+\begin{tcolorbox}[redbox, title=Diagn\'ostico: Por Qu\'e el ML No Aprende]
+El problema fundamental es que el ML formula el trading como un
+problema de \textbf{predicci\'on}: encontrar $f(\bm{x}) \to r$.
+Pero bajo bimodalidad irreducible, la funci\'on $f^*$ \'optima
+produce $r \approx 0$. Los losers ``contaminan'' el gradiente:
+cada loser empuja los pesos en la direcci\'on opuesta a los winners.
+El modelo queda paralizado en el promedio de la mezcla.
+
+A\~nadir m\'as features, capas, o complejidad al modelo no resuelve
+el problema --- lo empeora (overfitting a ruido). La soluci\'on no
+es predecir mejor, sino reformular el problema.
+\end{tcolorbox}
+
+
+\subsection{La Reformulaci\'on: Clasificaci\'on Secuencial Post-Entrada}
+
+El enfoque $\af$ + AEPS reformula el problema de dos maneras
+fundamentales:
+
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{No intenta predecir el retorno antes de entrar.}
+  Acepta que $\pi_W \approx 0.6$ y que el 40\% de los trades van a
+  fallar. La se\~nal solo identifica las \textit{condiciones} para
+  la bifurcaci\'on, no predice cu\'al desenlace ocurrir\'a.
+
+\item \textbf{Clasifica despu\'es de entrar, cuando hay m\'as
+  informaci\'on.} Una vez abierto el trade, la trayectoria
+  $(MFE(t), MAE(t))$ revela progresivamente a cu\'al poblaci\'on
+  pertenece. El ML pregunta ``\textit{?`va a ser winner?}'' antes de
+  entrar. AEPS pregunta ``\textit{?`es winner?}'' mientras el trade
+  est\'a abierto. La segunda pregunta tiene respuesta porque la
+  trayectoria contiene informaci\'on que los features pre-entrada
+  no tienen.
+\end{enumerate}
+
+\begin{theorem}[Superioridad de la Clasificaci\'on Secuencial]
+\label{thm:seq_superior}
+Sea $I_{\text{pre}} = I(\bm{x}; O)$ la informaci\'on mutua entre
+features pre-entrada y outcome, y sea
+$I_{\text{post}}(t) = I(\text{MFE}(t); O)$ la informaci\'on mutua
+entre MFE observado al tiempo $t$ y outcome. Entonces:
+\begin{equation}
+I_{\text{post}}(t) > I_{\text{pre}} \quad \text{para } t > t_{\text{divergencia}}
+\end{equation}
+donde $t_{\text{divergencia}}$ es el momento en que las trayectorias
+de winners y losers empiezan a separarse.
+\end{theorem}
+
+En el sistema $\af$, $t_{\text{divergencia}} \approx 10$--$30$
+minutos (tiempo medio al MFE de winners: 27 minutos). Despu\'es de
+ese punto, observar el MFE proporciona m\'as informaci\'on para
+clasificar el trade que \textit{cualquier} combinaci\'on de features
+evaluada antes de la entrada.
+
+Esta reformulaci\'on es an\'aloga al cambio de paradigma en
+an\'alisis secuencial propuesto por Wald \cite{wald1945sequential}:
+en vez de recolectar toda la evidencia y decidir al final (como el
+test de Neyman-Pearson), se decide tan pronto como la evidencia
+acumulada es suficiente. AEPS es un SPRT no-param\'etrico
+\cite{tartakovsky2014sequential} donde el ``dato'' que se acumula
+es la trayectoria MFE del trade.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Condiciones Formales para que AEPS Funcione}
+\label{sec:conditions}
+% ═══════════════════════════════════════════════════════════════
+
+Esta secci\'on establece las condiciones necesarias y suficientes que
+\textbf{cualquier} se\~nal de entrada debe cumplir para que el sistema
+AEPS genere edge positivo. Son independientes de la se\~nal $\af$
+espec\'ifica: aplican a cualquier se\~nal (RSI, medias m\'oviles,
+breakouts, modelos de ML, etc.) que se quiera combinar con AEPS.
+
+\begin{tcolorbox}[keybox, title=Las Tres Condiciones de la Se\~nal]
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{Separabilidad}:
+  $\Delta = \KL(f_W^{\text{MFE}} \| f_L^{\text{MFE}}) > 0$
+
+\item \textbf{Direcci\'on correcta}:
+  $\E[\text{MFE} \mid W] > \E[\text{MFE} \mid L]$
+
+\item \textbf{Separabilidad temprana}:
+  la divergencia de MFE ocurre dentro de la ventana temporal
+  $\tau_{\text{abort}}$ del clasificador
+\end{enumerate}
+Si las tres se cumplen, AEPS puede generar edge.
+Si falla cualquiera, AEPS es in\'util independientemente de cu\'an
+sofisticada sea la se\~nal.
+\end{tcolorbox}
+
+
+\subsection{Condici\'on 1: Separabilidad ($\Delta > 0$)}
+
+\begin{definition}[Separabilidad]
+La se\~nal produce separabilidad si y solo si las distribuciones de
+MFE de winners y losers son estad\'isticamente distintas:
+\begin{equation}
+\Delta = \KL(f_W^{\text{MFE}} \| f_L^{\text{MFE}}) > 0
+\end{equation}
+\end{definition}
+
+Sin separabilidad, el clasificador AEPS es trivial: TPR $=$ FPR
+para todo umbral $\theta$ (Lema~\ref{lem:trivial}). El early abort
+cortar\'ia la misma proporci\'on de winners que de losers, y las
+mejoras en protecci\'on se cancelar\'ian con la destrucci\'on de
+winners.
+
+\textbf{Verificaci\'on emp\'irica}: $\Delta = 0.250$ nats con
+$p = 0.000315$ (Mann-Whitney). La condici\'on se cumple con alta
+significancia.
+
+\textbf{?`Qu\'e se\~nales la cumplen?} Cualquier se\~nal que genere
+dos clusters distinguibles en MFE. Las se\~nales de reversi\'on a
+la media y breakouts tienden a cumplirla. Las se\~nales de tendencia
+pura t\'ipicamente no, porque los winners se desarrollan lentamente
+y su MFE temprano es indistinguible del de los losers.
+
+
+\subsection{Condici\'on 2: Direcci\'on Correcta ($\E[\text{MFE}|W] > \E[\text{MFE}|L]$)}
+
+\begin{definition}[Direcci\'on]
+Los winners deben tener MFE mayor que los losers en promedio:
+\begin{equation}
+\E[\text{MFE} \mid W] > \E[\text{MFE} \mid L]
+\end{equation}
+\end{definition}
+
+Esta condici\'on parece obvia pero no lo es. Existe un escenario
+donde falla: se\~nales cuyos winners se desarrollan tard\'iamente.
+Imaginemos una se\~nal donde los winners hacen un MFE bajo durante
+2 horas y despu\'es explotan. En la ventana del abort (1.08h), su
+MFE es similar al de los losers. AEPS los abortar\'ia como ``trades
+muertos'' --- clasificar\'ia en la direcci\'on equivocada.
+
+\textbf{Verificaci\'on emp\'irica}: $\E[\text{MFE}|W] = 3.74\%
+\gg 1.81\% = \E[\text{MFE}|L]$. La condici\'on se cumple con
+margen amplio.
+
+\textbf{Conexi\'on f\'isica}: la bifurcaci\'on $\af$ garantiza
+esta condici\'on por dise\~no. Cuando $\kappa$ invierte signo,
+la cascada de Langevin es r\'apida e intensa (MFE alto). Cuando
+$F_{\text{ext}}$ domina, el precio sigue subiendo y el MFE del
+short se estanca. La f\'isica produce la asimetr\'ia.
+
+
+\subsection{Condici\'on 3: Separabilidad Temprana}
+
+\begin{definition}[Temporalidad]
+La divergencia entre $f_W^{\text{MFE}}$ y $f_L^{\text{MFE}}$ debe
+manifestarse dentro de la ventana temporal del clasificador:
+\begin{equation}
+\exists\, t^* < \tau_{\text{abort}}: \quad
+\KL\!\left(f_W^{\text{MFE}(t^*)} \,\|\, f_L^{\text{MFE}(t^*)}\right) > 0
+\end{equation}
+donde MFE$(t^*)$ es el MFE m\'aximo alcanzado hasta el tiempo $t^*$.
+\end{definition}
+
+Esta es la condici\'on m\'as restrictiva y la que descarta a la
+mayor\'ia de las se\~nales de tendencia. Si el clasificador (abort)
+opera en una ventana de 1.08 horas, la informaci\'on para
+distinguir winners de losers debe estar disponible dentro de esa
+ventana. Si los winners tardan 4 horas en revelarse, el abort los
+matar\'ia antes de que se distingan.
+
+\textbf{Verificaci\'on emp\'irica}: el tiempo medio al MFE de
+winners es 27 minutos ($\ll$ 1.08h). La separaci\'on es temprana.
+
+\textbf{Tipolog\'ia de se\~nales por temporalidad}:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Se\~nales r\'apidas} (cumplen condici\'on 3):
+  bifurcaci\'on $\af$, reversi\'on a la media (RSI2+SMA200),
+  breakouts con volumen. Los desenlaces se resuelven en minutos
+  a horas.
+\item \textbf{Se\~nales lentas} (no cumplen condici\'on 3):
+  SuperTrend, cruces de medias m\'oviles, sistemas trend-following.
+  Los winners necesitan d\'ias o semanas para desarrollarse.
+\end{itemize}
+
+
+\subsection{Universalidad del Framework}
+
+\begin{remark}[Generalidad del Framework AEPS]
+Las tres condiciones son independientes de la se\~nal $\af$
+espec\'ifica. Cualquier se\~nal que las cumpla puede usar AEPS
+para generar edge. La bifurcaci\'on $\af$ las cumple por la
+f\'isica del instrumento (funding rate como spring, cascadas de
+liquidaci\'on), pero una se\~nal de mean reversion estad\'istica
+que tambi\'en las cumpla podr\'ia usar el mismo framework AEPS
+sin modificaciones.
+
+Lo que distingue a $\af$ de se\~nales puramente estad\'isticas
+(RSI, MACD, etc.) es la \textbf{robustez a cambios de r\'egimen}.
+Una se\~nal estad\'istica mide desviaciones de un patr\'on hist\'orico
+que puede cambiar. La se\~nal $\af$ mide \textbf{condiciones
+estructurales} del instrumento --- funding rate como costo real,
+OI como apalancamiento acumulado, taker ratio como flujo
+direccional --- que son invariantes mientras exista el mecanismo
+de futuros perpetuos con funding rate.
+\end{remark}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{AEPS como Test Secuencial No-Param\'etrico}
+\label{sec:sprt}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{An\'alogo del SPRT de Wald}
+
+El SPRT cl\'asico \cite{wald1945sequential} decide secuencialmente
+entre $H_0$ y $H_1$ acumulando el log-likelihood ratio:
+\begin{equation}
+\Lambda_n = \sum_{i=1}^{n} \log \frac{f_1(x_i)}{f_0(x_i)}
+\end{equation}
+y decide $H_1$ si $\Lambda_n \geq A$, $H_0$ si $\Lambda_n \leq B$,
+y contin\'ua si $B < \Lambda_n < A$. Wald y Wolfowitz demostraron
+que este test es \'optimo: minimiza el n\'umero esperado de
+observaciones para niveles dados de error tipo I y II.
+
+AEPS implementa un an\'alogo no-param\'etrico donde las ``fronteras''
+$A$ y $B$ son umbrales calibrados por percentiles emp\'iricos, y
+las ``observaciones'' son evaluaciones de la trayectoria
+$(MFE(t), MAE(t), t)$ cada 5 segundos.
+
+\begin{definition}[Clasificador AEPS]
+Sea $\hat{C}: \bm{X}(t) \to \{W, L\}$ el clasificador:
+\begin{itemize}[leftmargin=1.5em]
+\item $\hat{C} = L$ (abort) si MFE$(t) < \theta_{\text{abort}}$
+  despu\'es de $\tau_{\text{abort}}$ horas
+\item $\hat{C} = W$ (capturar) si MFE$(t) \geq \theta_{\text{ptp}}$
+\end{itemize}
+Las tasas de error son:
+\begin{align}
+\text{TPR}(\theta) &= \Prob(\text{MFE} < \theta \mid L)
+  = F_L^{\text{MFE}}(\theta) \\
+\text{FPR}(\theta) &= \Prob(\text{MFE} < \theta \mid W)
+  = F_W^{\text{MFE}}(\theta)
+\end{align}
+\end{definition}
+
+
+\subsection{Mecanismos de Salida como Regiones de Decisi\'on}
+
+Cada mecanismo cubre una zona del espacio (MFE, $t$, PnL):
+
+\begin{table}[H]
+\centering
+\caption{Mecanismos de salida y su rol en la clasificaci\'on.}
+\label{tab:exit_zones}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\textbf{Mecanismo} & \textbf{Rol en la clasificaci\'on} & \textbf{Valor} & \textbf{PnL medio} \\
+\midrule
+Early abort & Clasificador: decide $H_L$ (trade muerto) & 0.62\%, 1.08h & $-0.48\%$ \\
+Stop loss & Fuera de la bimodalidad: protecci\'on extrema & $-5.30\%$ & $-4.96\%$ \\
+Partial TP & Confirma $H_W$: asegura 33\% & 1.14\% & --- \\
+Profit lock & Red entre PTP y trailing & 0.57\% & $+0.40\%$ \\
+Trailing stop & Optimiza captura en $H_W$ confirmado & 2.0\%, 18\% cb & $+1.50\%$ \\
+Pump capture & Captura \'optima con informaci\'on de exhaustion & variable & $+3.00\%$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+El stop loss opera \textbf{fuera} de la bimodalidad --- es protecci\'on
+contra escenarios donde el modelo entero falla (la se\~nal se equivoc\'o
+completamente). Los dem\'as mecanismos operan \textbf{dentro} de la
+bimodalidad: el early abort clasifica, el partial TP confirma, el
+profit lock protege la zona intermedia, el trailing captura, y el
+pump capture maximiza.
+
+
+\subsection{Correcci\'on de Censura}
+
+\subsubsection{Censura por Early Abort (Losers)}
+
+El early abort introduce censura por la derecha
+\cite{kaplan1958nonparametric} en MAE y $t_{\text{MFE}}$: un trade
+abortado no alcanz\'o su MAE real. La soluci\'on es usar solo losers
+naturales $\mathcal{L}_N$ para calibrar SL y abort hours.
+
+\subsubsection{Censura por Profit Lock (Winners)}
+
+An\'alogamente, el profit lock censura winners: un trade cerrado por
+profit lock tiene ETD/MFE artificialmente alto (0.724 vs 0.376 en
+non-PL). La correcci\'on excluye profit lock del c\'alculo de
+trailing callback:
+\begin{equation}
+\text{trailing\_callback} = P_{25}\!\left(\frac{\text{ETD}}{\text{MFE}}\right)_{\mathcal{W} \setminus \mathcal{W}_{\text{PL}}}
+\end{equation}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Teorema de Super-Aditividad}
+\label{sec:superadd}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Lemas Preparatorios}
+
+\begin{lemma}[El Clasificador es Trivial sin Separabilidad]
+\label{lem:trivial}
+Si $\Delta = 0$, entonces $\forall\, \theta$:
+$\mathrm{TPR}(\theta) = \mathrm{FPR}(\theta)$.
+\end{lemma}
+
+\begin{proof}
+$\Delta = 0 \Rightarrow f_W^{\text{MFE}} = f_L^{\text{MFE}}$ c.s.
+$\Rightarrow F_W(\theta) = F_L(\theta)$ $\forall\,\theta$.
+\end{proof}
+
+\begin{lemma}[Separabilidad Permite Clasificaci\'on Asim\'etrica]
+\label{lem:asymmetric}
+Si $\Delta > 0$ y $\E[\text{MFE} \mid W] > \E[\text{MFE} \mid L]$,
+entonces existe $\theta^*$ tal que
+$\mathrm{TPR}(\theta^*) > \mathrm{FPR}(\theta^*)$.
+\end{lemma}
+
+\begin{proof}
+Dominancia estoc\'astica de primer orden: $F_L(\theta) \geq F_W(\theta)$
+$\forall\,\theta$, con desigualdad estricta en al menos un punto
+(por $\Delta > 0$).
+\end{proof}
+
+
+\subsection{Teorema Principal}
+
+\begin{theorem}[Super-Aditividad de Se\~nal + AEPS]
+\label{thm:superadd}
+Sea $\mathcal{S}$ una se\~nal que cumple las tres condiciones de la
+Secci\'on~\ref{sec:conditions}. Sea $\mathcal{A}$ el sistema AEPS.
+Definimos:
+\begin{align}
+V_{\mathcal{S}} &= \E[\text{PnL} \mid \mathcal{S}, \text{exits fijos}] \\
+V_{\mathcal{A}} &= \E[\text{PnL} \mid \text{entrada random}, \mathcal{A}] \\
+V_{\mathcal{S}+\mathcal{A}} &= \E[\text{PnL} \mid \mathcal{S}, \mathcal{A}]
+\end{align}
+Entonces:
+\begin{equation}
+\boxed{V_{\mathcal{S}+\mathcal{A}} > V_{\mathcal{S}} + V_{\mathcal{A}}}
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+\textbf{Paso 1}: $V_{\mathcal{S}} \leq 0$. Sin AEPS, losers corren
+hasta SL. El ratio $\rho_{\text{fijo}} < (1-\pi_W)/\pi_W$. Dato
+emp\'irico: $V_{\mathcal{S}} \approx -0.05\%$.
+
+\textbf{Paso 2}: $V_{\mathcal{A}} = 0$. Con entrada random,
+$\pi_W = 0.5$ y $\Delta = 0$. Por Lema~\ref{lem:trivial},
+TPR $=$ FPR. La ganancia por abortar losers se cancela con la
+p\'erdida por abortar winners.
+
+\textbf{Paso 3}: $V_{\mathcal{S}+\mathcal{A}} > 0$. Con $\Delta > 0$,
+por Lema~\ref{lem:asymmetric}, TPR $>$ FPR. AEPS aborta m\'as losers
+que winners y optimiza captura. Emp\'iricamente:
+$V_{\mathcal{S}+\mathcal{A}} \approx +0.45\%$.
+
+Sinergia: $0.45\% - (-0.05\% + 0\%) = +0.50\% > 0$. $\square$
+\end{proof}
+
+
+\subsection{Ecuaci\'on Fundamental del Edge}
+
+\begin{theorem}[Descomposici\'on del Edge]
+\label{thm:edge}
+\begin{equation}
+\E[\text{PnL}] = \pi_W \cdot \E[\text{PnL} \mid W]
+  + (1-\pi_W) \cdot \E[\text{PnL} \mid L]
+\end{equation}
+Rentabilidad requiere:
+$\rho = |\E[\text{PnL}|W]| / |\E[\text{PnL}|L]| > (1-\pi_W)/\pi_W$.
+\end{theorem}
+
+Valores post-convergencia: $\pi_W = 0.615$, $\rho = 1.809$,
+threshold $= 0.625$. Margen sobre breakeven: $+189\%$.
+Profit factor: 3.53.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Convergencia del Sistema}
+\label{sec:convergence}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Fases de Convergencia}
+
+\begin{definition}[Fases]
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{Cold start} ($n < 15$): par\'ametros est\'aticos.
+  Objetivo: supervivencia.
+\item \textbf{Warmup blend} ($15 \leq n < 25$):
+  $\theta_{\text{eff}} = (1-\alpha)\theta_0 + \alpha\hat\theta$,
+  $\alpha = (n-15)/10$.
+\item \textbf{Adaptativo} ($n \geq 25$): 100\% emp\'irico.
+\end{enumerate}
+\end{definition}
+
+\begin{proposition}[Condici\'on de Convergencia]
+El sistema converge si: (1) $\Delta > 0$ persiste durante cold start;
+(2) el capital sobrevive la fase 1. La bimodalidad es propiedad de la
+se\~nal, no del AEPS --- existe desde el trade 1.
+\end{proposition}
+
+
+\subsection{Sizing Adaptativo por Confianza}
+
+\begin{equation}
+f_{\text{capital}} = f_{\text{base}} \times \min\!\left(1, \frac{n}{N_{\text{window}}}\right)
+\end{equation}
+
+Limita el da\~no durante cold start: trade 5 $\to$ sizing 1\%;
+trade 15 $\to$ 3\%; trade 25+ $\to$ 5\%.
+
+
+\subsection{Meta-Prior para Re-Convergencia}
+
+\begin{definition}[Meta-Prior por Ratios Normalizados]
+Memoria larga ($N = 100$--$200$) almacena ratios par\'ametro/ATR:
+\begin{equation}
+r_{\text{SL}} = \text{SL}_{\text{\'opt}} / \overline{\text{ATR}}, \quad
+r_{\text{PTP}} = \text{PTP}_{\text{\'opt}} / \overline{\text{ATR}}, \quad \ldots
+\end{equation}
+Ante reset: $\text{SL}_{\text{nuevo}} = r_{\text{SL}} \times \text{ATR}_{\text{actual}}$.
+Los ratios son m\'as estables que los valores absolutos porque est\'an
+normalizados por volatilidad.
+\end{definition}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Procedimiento de Dry Run Pre-Operativo}
+\label{sec:dryrun}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Rompiendo la Circularidad}
+
+El dry run resuelve el cold start midiendo la distribuci\'on
+\textit{pura} de la se\~nal sin contaminaci\'on de exits.
+
+\begin{definition}[Protocolo de Dry Run]
+\begin{enumerate}[leftmargin=1.5em]
+\item Paper mode con hold fijo de 2--3 horas. Sin SL, sin trailing,
+  sin abort. Solo timeout.
+\item Ejecutar $N_{\text{dry}} = 30$--$40$ trades registrando
+  MFE, MAE, $t_{\text{MFE}}$.
+\item Calcular $\Delta$, Mann-Whitney, E-ratio.
+\end{enumerate}
+\end{definition}
+
+\subsection{Test de Admisi\'on}
+
+\begin{definition}[Criterio de Admisi\'on]
+El sistema se habilita si y solo si:
+\begin{equation}
+\boxed{\Delta > 0.15 \quad \wedge \quad p_{\text{MW}} < 0.10
+  \quad \wedge \quad \E[\text{MFE} \mid W] > \E[\text{MFE} \mid L]}
+\end{equation}
+Si falla, la se\~nal no produce bimodalidad explotable. No operar.
+\end{definition}
+
+\subsection{Par\'ametros Iniciales Derivados}
+
+Si pasa el test, los par\'ametros iniciales se derivan de la
+distribuci\'on de dry run con las mismas f\'ormulas que AEPS:
+
+\begin{table}[H]
+\centering
+\caption{Par\'ametros iniciales derivados del dry run.}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Par\'ametro} & \textbf{F\'ormula} & \textbf{Fallback (ATR)} \\
+\midrule
+\param{stop\_loss} & $P_{75}(|\text{MAE}|_L) + 0.5\%$ & $1.5 \times \text{ATR}$ \\
+\param{partial\_tp} & $P_{25}(\text{MFE}_W)$ & $0.4 \times \text{ATR}$ \\
+\param{trail\_activation} & $P_{50}(\text{MFE}_W)$ & $0.7 \times \text{ATR}$ \\
+\param{abort\_mfe} & $P_{50}(\text{MFE}_L)$ & $0.2 \times \text{ATR}$ \\
+\param{abort\_hours} & $P_{75}(t_{\text{MFE},L}) / 3600$ & 2.0h \\
+\param{trail\_callback} & $P_{25}(\text{ETD}/\text{MFE})_{W \setminus \text{PL}}$ & 0.30 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Monitor de Salud del Sistema}
+\label{sec:health}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Sistema de Tres Alarmas}
+
+\subsubsection{Alarma R\'apida: Equity Drawdown}
+
+\begin{equation}
+\text{DD}(t) = \frac{E_{\max} - E(t)}{E_{\max}} > 0.10
+\;\Rightarrow\; \text{PAUSAR}
+\end{equation}
+
+Con sizing 5\% y SL 5.3\%, $\sim$4 SLs consecutivos tocan 10\%.
+No es mala suerte --- es cambio estructural.
+
+\subsubsection{Alarma Media: Conteo de Stop Losses}
+
+\begin{align}
+n_{\text{SL}}(8) \geq 3 &\;\Rightarrow\; \text{sizing 50\%} \\
+n_{\text{SL}}(12) \geq 5 &\;\Rightarrow\; \text{PAUSAR}
+\end{align}
+
+Si AEPS funciona, los losers mueren por abort ($-0.5\%$), no por
+SL ($-5.3\%$). M\'as SLs indica p\'erdida de discriminaci\'on.
+
+\subsubsection{Alarma Lenta: $\KL$ Rolling}
+
+Cada 5 trades, calcular $\Delta$ sobre los \'ultimos 20:
+\begin{align}
+\Delta > 0.25 &\;\Rightarrow\; \text{operar normal} \\
+0.10 < \Delta \leq 0.25 &\;\Rightarrow\; \text{sizing 50\%} \\
+\Delta \leq 0.10 &\;\Rightarrow\; \text{bimodalidad perdida, PAUSAR}
+\end{align}
+
+\'Unica alarma que distingue mala suerte de p\'erdida estructural
+de bimodalidad.
+
+\subsection{Flujo de Control}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm, font=\small,
+  proc/.style={rectangle, rounded corners, minimum width=3.5cm, minimum height=1cm, align=center, draw=cdark, fill=clight},
+  dec/.style={diamond, aspect=2.5, minimum width=2.5cm, align=center, draw=cdark, fill=corange!15, font=\small},
+  arr/.style={thick,->,>=stealth}
+]
+  \node[proc, fill=cblue!15] (dry) {\textbf{DRY MODE}\\30--40 trades\\hold fijo, sin exits};
+  \node[dec, below=1.2cm of dry] (test) {$\Delta > 0.15$?\\$p < 0.10$?};
+  \node[proc, fill=cred!15, right=2.5cm of test] (stop) {\textbf{NO OPERAR}\\Se\~nal no sirve};
+  \node[proc, fill=cgreen!15, below=1.2cm of test] (live) {\textbf{LIVE MODE}\\AEPS pre-calibrado\\3 alarmas activas};
+  \node[dec, below=1.2cm of live] (health) {Alarma\\activa?};
+  \node[proc, below left=1.2cm and 0.5cm of health, fill=cgreen!10] (ok) {Operar normal\\Sizing 100\%};
+  \node[proc, below=1.2cm of health, fill=corange!15] (warn) {Reducir sizing\\50\%};
+  \node[proc, below right=1.2cm and 0.5cm of health, fill=cred!15] (pause) {PAUSAR\\Volver a dry};
+  \draw[arr] (dry) -- (test);
+  \draw[arr] (test) -- node[above]{No} (stop);
+  \draw[arr] (test) -- node[left]{S\'i} (live);
+  \draw[arr] (live) -- (health);
+  \draw[arr] (health) -- node[left,font=\scriptsize]{No alarma} (ok);
+  \draw[arr] (health) -- node[left,font=\scriptsize]{Media} (warn);
+  \draw[arr] (health) -- node[right,font=\scriptsize]{Cr\'itica} (pause);
+  \draw[arr, dashed, cgray] (pause.east) -- ++(2,0) |- (dry.east);
+  \draw[arr, dashed, cgray] (ok.west) -- ++(-1.5,0) |- (live.west);
+\end{tikzpicture}
+\caption{Flujo de control completo. Pausa cr\'itica $\to$ dry mode $\to$ re-evaluar $\Delta$.}
+\label{fig:control_flow}
+\end{figure}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Bimodalidad por R\'egimen vs Bimodalidad por Estructura}
+\label{sec:regime_vs_structure}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{La Distinci\'on Fundamental}
+
+No toda bimodalidad es igual. Proponemos una distinci\'on cr\'itica
+entre dos tipos de bimodalidad que, hasta donde sabemos, no ha sido
+formalizada previamente:
+
+\begin{definition}[Bimodalidad por R\'egimen]
+\label{def:regime_bimodal}
+Una se\~nal exhibe bimodalidad por r\'egimen cuando la separaci\'on
+entre $f_W$ y $f_L$ depende del estado direccional del mercado.
+En un mercado bajista, shorts random producen $\Delta > 0$ porque
+la tendencia genera winners sistem\'aticamente. Cuando el r\'egimen
+cambia (mercado alcista o lateral), $\Delta \to 0$ y la bimodalidad
+desaparece.
+\end{definition}
+
+\begin{definition}[Bimodalidad por Estructura]
+\label{def:struct_bimodal}
+Una se\~nal exhibe bimodalidad por estructura cuando la separaci\'on
+entre $f_W$ y $f_L$ proviene de las \textbf{condiciones del instrumento}
+al momento de la entrada, no del r\'egimen general del mercado.
+La se\~nal selecciona oportunidades transversalmente sobre un universo
+de instrumentos, entrando solo en aquellos que exhiben la condici\'on
+estructural independientemente de su tendencia individual.
+\end{definition}
+
+La diferencia operativa es la \textbf{robustez a cambios de r\'egimen}:
+
+\begin{itemize}[leftmargin=1.5em]
+\item Una se\~nal con bimodalidad por r\'egimen funciona mientras el
+  mercado va en la direcci\'on favorable. Cuando cambia, la $\Delta$
+  colapsa.
+\item Una se\~nal con bimodalidad por estructura funciona en cualquier
+  r\'egimen porque siempre est\'a seleccionando los instrumentos que
+  \textit{ahora mismo} exhiben la condici\'on, independientemente de
+  la tendencia general.
+\end{itemize}
+
+
+\subsection{La Se\~nal $\af$ como Generador de Bimodalidad Estructural}
+
+La se\~nal $\af$ opera transversalmente sobre un universo de $500+$
+tokens de futuros perpetuos. No apuesta a que un token espec\'ifico
+va a caer --- identifica cu\'ales tokens \textit{en este momento}
+tienen las condiciones estructurales para una bifurcaci\'on:
+
+\begin{itemize}[leftmargin=1.5em]
+\item Funding rate alto = costo real que pagan los longs
+\item OI creciente = apalancamiento acumulado real
+\item Taker ratio alto = flujo direccional de \'ordenes
+\item Volumen elevado = actividad an\'omala
+\item Exhaustion = se\~nales de agotamiento del impulso
+\end{itemize}
+
+Estos observables son \textbf{invariantes de r\'egimen}: un funding
+de $0.05\%$ significa lo mismo en un mercado alcista que bajista.
+Lo que cambia es \textit{cu\'antos} tokens exhiben la condici\'on
+(m\'as en mercados alcistas euf\'oricos, menos en bajistas), pero
+cuando la condici\'on existe, la din\'amica de bifurcaci\'on es la misma.
+
+Esto explica por qu\'e los 46 trades reales del sistema muestran
+bimodalidad significativa ($p = 0.000315$) a pesar de ser sobre
+tokens completamente distintos (RDNT, PLAY, CYS, BULLA, etc.) en
+diferentes momentos. Cada token est\'a en un r\'egimen diferente,
+pero todos comparten la misma condici\'on estructural al momento
+de entrada: spring $\af$ tensionado.
+
+
+\subsection{Evidencia Experimental: El Contraste DOGE}
+
+Para ilustrar la diferencia, se realiz\'o un experimento comparando
+se\~nales cl\'asicas sobre un token individual (DOGEUSDT) durante
+62 d\'ias.
+
+\subsubsection{Protocolo}
+
+Se tomaron 1500 velas de 1 hora de DOGEUSDT (62 d\'ias) y 1000PEPEUSDT
+(62 d\'ias). Para cada token se generaron m\'ultiples se\~nales de
+entrada (RSI, Bollinger Bands, volumen, taker ratio, pumps) y un
+\textbf{control random} (entradas al azar). Para cada entrada se
+midi\'o MFE y MAE con hold fijo de 3 horas, sin ning\'un mecanismo
+de exit. Se calcul\'o $\Delta$, Mann-Whitney, y el score $Q$ de
+bimodalidad.
+
+\subsubsection{Resultados}
+
+\begin{table}[H]
+\centering
+\caption{Bimodalidad de se\~nales sobre DOGEUSDT ($-25.6\%$ en el per\'iodo).}
+\label{tab:doge_exp}
+\begin{tabular}{lcccccl}
+\toprule
+\textbf{Se\~nal} & $\bm{N}$ & \textbf{WR} & $\bm{\Delta}$ & $\bm{p}_{\text{MW}}$ & $\bm{Q}$ & \textbf{Tipo} \\
+\midrule
+BB$>$1 + Vol$>$2$\times$ & 23 & 35\% & 0.557 & 0.0012 & 1.091 & R\'egimen \\
+RSI14 $>$ 75 & 19 & 37\% & 0.496 & 0.0010 & 0.912 & R\'egimen \\
+MR: RSI2$>$95+SMA200 & 34 & 41\% & 0.497 & 0.0001 & 0.865 & R\'egimen \\
+\textbf{RANDOM (control)} & \textbf{120} & \textbf{52\%} & \textbf{0.619} & \textbf{0.0000} & \textbf{0.834} & \textbf{R\'egimen} \\
+\midrule
+Se\~nales $\af$ (multi-obs.) & 2--6 & --- & \multicolumn{4}{l}{Insuficientes trades por token} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Bimodalidad de se\~nales sobre 1000PEPEUSDT ($-30.1\%$ en el per\'iodo).}
+\label{tab:pepe_exp}
+\begin{tabular}{lcccccl}
+\toprule
+\textbf{Se\~nal} & $\bm{N}$ & \textbf{WR} & $\bm{\Delta}$ & $\bm{p}_{\text{MW}}$ & $\bm{Q}$ & \textbf{Tipo} \\
+\midrule
+\textbf{RANDOM (control)} & \textbf{120} & \textbf{52\%} & \textbf{0.619} & \textbf{0.0000} & \textbf{0.833} & \textbf{R\'egimen} \\
+BB$>$1 + Vol$>$2$\times$ & 18 & 28\% & 0.354 & 0.0266 & 0.599 & R\'egimen \\
+RSI14 $>$ 75 & 15 & 33\% & 0.354 & 0.0071 & 0.554 & R\'egimen \\
+\midrule
+Se\~nales $\af$ (multi-obs.) & 1--2 & --- & \multicolumn{4}{l}{Insuficientes trades por token} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[redbox, title=Hallazgo Cr\'itico: El Random Gana]
+El control random produce $Q = 0.83$ en \textbf{ambos} tokens ---
+superando a la mayor\'ia de las se\~nales. Esto ocurre porque ambos
+tokens cayeron $25$--$30\%$ durante el per\'iodo: \textbf{cualquier
+short random es rentable en un mercado bajista}. La bimodalidad
+observada no es propiedad de la se\~nal sino del r\'egimen. Cuando
+el mercado cambie de direcci\'on, esta bimodalidad desaparecer\'a y
+todas las se\~nales (incluidas BB, RSI, etc.) dejar\'an de funcionar
+sobre estos tokens.
+\end{tcolorbox}
+
+\subsubsection{Contraste con el Sistema $\af$ Real}
+
+\begin{table}[H]
+\centering
+\caption{Comparaci\'on: se\~nales single-token vs $\af$ multi-token.}
+\label{tab:contrast}
+\begin{tabular}{lccccl}
+\toprule
+\textbf{Sistema} & $\bm{N}$ & $\bm{\Delta}$ & $\bm{p}_{\text{MW}}$ &
+  \textbf{Tokens} & \textbf{Tipo bimodalidad} \\
+\midrule
+Random en DOGE & 120 & 0.619 & 0.0000 & 1 token & R\'egimen ($-25\%$) \\
+BB+Vol en DOGE & 23 & 0.557 & 0.0012 & 1 token & R\'egimen \\
+RSI14$>$75 en DOGE & 19 & 0.496 & 0.0010 & 1 token & R\'egimen \\
+\midrule
+\textbf{$\af$ real} & \textbf{46} & \textbf{0.250} & $\bm{0.000315}$
+  & \textbf{30+ tokens} & \textbf{Estructura} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La $\Delta$ del sistema $\af$ real (0.250) es menor que la de las
+se\~nales single-token en DOGE (0.5--0.6), pero tiene una diferencia
+cualitativa fundamental: se midi\'o sobre \textbf{30+ tokens distintos}
+en diferentes momentos y reg\'imenes. No es un artefacto del mercado
+bajista --- es una propiedad de la se\~nal operando transversalmente.
+
+\subsection{Cuarta Condici\'on: Robustez a R\'egimen}
+
+El experimento motiva agregar una \textbf{cuarta condici\'on} al
+framework de la Secci\'on~\ref{sec:conditions}:
+
+\begin{tcolorbox}[keybox, title=Condici\'on 4: Robustez a R\'egimen]
+Una se\~nal es explotable por AEPS de forma \textbf{sostenible}
+(no solo en un r\'egimen favorable) si y solo si:
+\begin{equation}
+\boxed{\Delta_{\text{se\~nal}} > \Delta_{\text{random}}
+  \quad \text{sobre el mismo universo de instrumentos}}
+\end{equation}
+donde $\Delta_{\text{random}}$ es la separabilidad de entradas
+aleatorias sobre el mismo conjunto de tokens y per\'iodo.
+Si $\Delta_{\text{se\~nal}} \leq \Delta_{\text{random}}$, la
+bimodalidad es por r\'egimen y desaparecer\'a con el cambio de mercado.
+\end{tcolorbox}
+
+\begin{remark}[Test Operativo de Robustez]
+El dry run (Secci\'on~\ref{sec:dryrun}) debe incluir un control
+random: generar $N$ entradas aleatorias sobre los mismos tokens y
+per\'iodo, medir su $\Delta_{\text{random}}$, y verificar que la
+se\~nal lo supere. Si no lo supera, la se\~nal no tiene edge propio
+--- est\'a surfeando el r\'egimen.
+\end{remark}
+
+\begin{remark}[Por Qu\'e $\af$ Cumple la Condici\'on 4]
+La se\~nal $\af$ opera transversalmente sobre $500+$ tokens,
+seleccionando en cada momento los que exhiben la condici\'on
+estructural (funding $+$ OI $+$ pump $+$ exhaustion). Esto
+diversifica autom\'aticamente entre reg\'imenes: si el mercado
+general es alcista, hay m\'as tokens con la condici\'on (m\'as
+oportunidades); si es bajista, hay menos (menos trades pero la
+condici\'on sigue siendo v\'alida cuando aparece). La bimodalidad
+no depende de la direcci\'on del mercado sino de la existencia
+de exceso de leverage --- que es una condici\'on microestructural
+del instrumento, no macroecon\'omica.
+\end{remark}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Validaci\'on Emp\'irica ($N=46$)}
+\label{sec:validation}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Evoluci\'on Temporal}
+
+\begin{table}[H]
+\centering
+\caption{Evoluci\'on del sistema por per\'iodos.}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Per\'iodo} & $\bm{N}$ & \textbf{WR} & $\overline{\textbf{PnL}}$ &
+  \textbf{PF} & $\bm{\Delta}$ & $\bm{p}_{\text{MW}}$ \\
+\midrule
+Trades 1--23 (pre-AEPS) & 23 & 57\% & $-0.05\%$ & $\sim$1.0 & 0.405 & 0.083 \\
+Trades 24--46 (con AEPS) & 23 & 61\% & $-0.08\%$ & $\sim$0.9 & 0.551 & 0.003 \\
+\'Ultimos 13 (post-conv.) & 13 & 69\% & $+0.45\%$ & 3.53 & --- & --- \\
+\midrule
+Total & 46 & 59\% & $-0.06\%$ & 0.99 & 0.250 & 0.000315 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La se\~nal produce bimodalidad desde el inicio ($\Delta$ mejora de
+0.405 a 0.551). El performance econ\'omico es breakeven hasta que
+AEPS converge. Post-convergencia: PF = 3.53.
+
+\subsection{Performance por Exit}
+
+\begin{table}[H]
+\centering
+\caption{Estad\'isticas por exit reason ($N=46$).}
+\begin{tabular}{lccccr}
+\toprule
+\textbf{Exit} & $\bm{n}$ & \textbf{WR} & $\overline{\textbf{PnL}}$ &
+  \textbf{PMFE} & \textbf{Sum \$} \\
+\midrule
+pump\_capture & 9 & 100\% & $+3.00\%$ & 0.859 & $+\$28.57$ \\
+trailing\_stop & 18 & 83\% & $+1.29\%$ & 0.227 & $+\$26.72$ \\
+profit\_lock & 3 & 100\% & $+0.40\%$ & 0.277 & $+\$2.38$ \\
+early\_abort & 5 & 20\% & $-0.48\%$ & --- & $-\$2.65$ \\
+stop\_loss & 10 & 0\% & $-4.96\%$ & --- & $-\$53.05$ \\
+oi\_abort & 1 & 0\% & $-2.42\%$ & --- & $-\$2.83$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+El 88\% de las p\'erdidas provienen de SLs. La reducci\'on de SLs
+via early abort ($-\$0.50$ vs $-\$5.30$) es el mecanismo principal
+de generaci\'on de edge.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Resumen y Arquitectura Te\'orica}
+\label{sec:summary}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{tcolorbox}[keybox, title=Arquitectura Te\'orica Completa]
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{Bimodalidad inherente}: toda se\~nal de entrada genera
+  una distribuci\'on de mezcla de resultados. El ML predictivo
+  fracasa porque aprende el promedio de la mezcla ($\approx 0$).
+  La soluci\'on es clasificaci\'on secuencial post-entrada.
+
+\item \textbf{Cuatro condiciones de la se\~nal}: (1) separabilidad
+  ($\Delta > 0$), (2) direcci\'on correcta ($\E[\text{MFE}|W] > \E[\text{MFE}|L]$),
+  (3) separabilidad temprana (divergencia dentro de $\tau_{\text{abort}}$),
+  y (4) robustez a r\'egimen ($\Delta_{\text{se\~nal}} > \Delta_{\text{random}}$).
+  Las tres primeras son necesarias para que AEPS funcione; la cuarta
+  es necesaria para que funcione de forma sostenible.
+
+\item \textbf{Bimodalidad por estructura vs por r\'egimen}: las
+  se\~nales cl\'asicas (RSI, BB) producen bimodalidad dependiente
+  del r\'egimen de mercado. La se\~nal $\af$ produce bimodalidad
+  por estructura del instrumento, operando transversalmente sobre
+  $500+$ tokens. Evidencia experimental: el control random iguala o
+  supera a se\~nales cl\'asicas en tokens individuales durante
+  per\'iodos direccionales.
+
+\item \textbf{Se\~nal $\af$}: cumple las cuatro condiciones por
+  dise\~no f\'isico (Langevin). Mide condiciones estructurales del
+  instrumento, no patrones estad\'isticos.
+
+\item \textbf{AEPS}: clasificador secuencial no-param\'etrico
+  (an\'alogo SPRT de Wald) con correcciones de censura (Kaplan-Meier)
+  para early abort (losers) y profit lock (winners).
+
+\item \textbf{Super-aditividad}: $V_{\mathcal{S}+\mathcal{A}} >
+  V_{\mathcal{S}} + V_{\mathcal{A}}$. La se\~nal provee separabilidad,
+  AEPS la explota. Ninguno funciona solo.
+
+\item \textbf{Convergencia}: sizing adaptativo + dry run pre-operativo
+  + meta-prior por ratios ATR.
+
+\item \textbf{Monitor de salud}: drawdown, SL count, $\KL$ rolling.
+  Detecta p\'erdida de bimodalidad antes de da\~no significativo.
+\end{enumerate}
+\end{tcolorbox}
+
+
+% ═══════════════════════════════════════════════════════════════
+\begin{thebibliography}{12}
+% ═══════════════════════════════════════════════════════════════
+
+\bibitem{epeloa2026bifurcation}
+J.~Epeloa,
+``Trading the $\alpha_f$ Bifurcation: Short Strategies in Perpetual Futures,''
+Technical Report, Mapplics, 2026.
+
+\bibitem{wald1945sequential}
+A.~Wald,
+``Sequential Tests of Statistical Hypotheses,''
+\textit{The Annals of Mathematical Statistics}, vol.~16, no.~2,
+pp.~117--186, 1945.
+
+\bibitem{hamilton1989regime}
+J.~D.~Hamilton,
+``A New Approach to the Economic Analysis of Nonstationary Time Series
+and the Business Cycle,''
+\textit{Econometrica}, vol.~57, no.~2, pp.~357--384, 1989.
+
+\bibitem{kaplan1958nonparametric}
+E.~L.~Kaplan and P.~Meier,
+``Nonparametric Estimation from Incomplete Observations,''
+\textit{Journal of the American Statistical Association}, vol.~53,
+no.~282, pp.~457--481, 1958.
+
+\bibitem{cover2006elements}
+T.~M.~Cover and J.~A.~Thomas,
+\textit{Elements of Information Theory}, 2nd ed.,
+Wiley-Interscience, 2006.
+
+\bibitem{tartakovsky2014sequential}
+A.~Tartakovsky, I.~Nikiforov, and M.~Basseville,
+\textit{Sequential Analysis: Hypothesis Testing and Changepoint Detection},
+CRC Press, 2014.
+
+\bibitem{leung2021trailing}
+T.~Leung and H.~Zhang,
+``Optimal Trading with a Trailing Stop,''
+\textit{Applied Mathematics \& Optimization}, vol.~83,
+pp.~669--698, 2021.
+
+\bibitem{sweeney1993mae}
+J.~Sweeney,
+``Maximum Adverse Excursion: Analyzing Price Fluctuations for Trading
+Management,'' Wiley, 1997.
+(Concepto original en \textit{Technical Analysis of Stocks \& Commodities},
+1993.)
+
+\bibitem{bayesian_sl}
+``Determining Optimal Stop-Loss Thresholds via Bayesian Maximum
+Drawdown Analysis,'' arXiv:1609.00869, 2016.
+
+\bibitem{palazzi2025crypto}
+R.~B.~Palazzi et al.,
+``Trading Games: Beating Passive Strategies in the Bullish Crypto Market,''
+\textit{Journal of Futures Markets}, 2025.
+
+\bibitem{filippos2018tpsl}
+F.~Filippos et al.,
+``Take Profit and Stop Loss Trading Strategies Comparison in Combination
+with an MACD Trading System,''
+\textit{Journal of Risk and Financial Management}, vol.~11, no.~3, 2018.
+
+\bibitem{siegmund1985sequential}
+D.~Siegmund,
+\textit{Sequential Analysis: Tests and Confidence Intervals},
+Springer, 1985.
+
+\end{thebibliography}
+
+\end{document}

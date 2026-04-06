@@ -1,0 +1,1045 @@
+\documentclass[11pt,a4paper]{article}
+
+% ─── Packages ───
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,english]{babel}
+\usepackage{amsmath,amssymb,bm,amsthm}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds,decorations.pathreplacing,patterns}
+
+\geometry{margin=2.5cm}
+
+% ─── Colors ───
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{cgray}{RGB}{149,165,166}
+\definecolor{cdark}{RGB}{44,62,80}
+\definecolor{clight}{RGB}{236,240,241}
+
+\tcbset{
+  defbox/.style={colback=cblue!5, colframe=cblue!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  thmbox/.style={colback=cgreen!5, colframe=cgreen!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  warnbox/.style={colback=corange!5, colframe=corange!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+  keybox/.style={colback=cpurple!5, colframe=cpurple!60, fonttitle=\bfseries, arc=2mm, boxrule=0.5pt},
+}
+
+% ─── Theorems ───
+\newtheorem{definition}{Definici\'on}[section]
+\newtheorem{proposition}{Proposici\'on}[section]
+\newtheorem{theorem}{Teorema}[section]
+\newtheorem{corollary}{Corolario}[section]
+\newtheorem{remark}{Observaci\'on}[section]
+
+% ─── Commands ───
+\newcommand{\af}{\alpha_f}
+\newcommand{\score}{\hat{S}_{\alpha_f}}
+\newcommand{\energy}{E_{\alpha_f}}
+\newcommand{\exh}{\hat{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\param}[1]{\texttt{\small\color{cpurple}#1}}
+
+% ═══════════════════════════════════════════════════════════════
+\begin{document}
+
+\begin{center}
+    {\LARGE\bfseries Teor\'ia Unificada de Se\~nal de Entrada}\\[4pt]
+    {\LARGE\bfseries y Sistema Adaptativo de Salida}\\[4pt]
+    {\LARGE\bfseries para la Estrategia $\af$ Bifurcation Short}\\[16pt]
+    {\large Javier Epeloa\quad$\cdot$\quad Mapplics}\\[8pt]
+    {\normalsize Documento T\'ecnico --- Marzo 2026}\\[4pt]
+    {\small\itshape Formalizaci\'on matem\'atica del sistema completo:\\
+    modelo de mezcla de bifurcaci\'on + AEPS como estimador\\
+    de fronteras \'optimas bajo censura selectiva}
+\end{center}
+
+\vspace{8pt}
+
+\begin{abstract}
+Presentamos una formalizaci\'on matem\'atica unificada del sistema
+de trading $\af$ Bifurcation Short que integra la se\~nal de entrada
+(score compuesto $\score$) con el sistema adaptativo de salida (AEPS).
+Demostramos que la se\~nal de entrada act\'ua como un \textbf{clasificador
+binario ruidoso} que genera trades de una \textbf{distribuci\'on de mezcla}
+con dos poblaciones estad\'isticamente separables ($p = 0.033$,
+Mann-Whitney), no como un predictor continuo. El AEPS se formaliza como
+un \textbf{an\'alogo no-param\'etrico del Sequential Probability Ratio Test
+(SPRT)} que estima fronteras de decisi\'on \'optimas mediante percentiles
+emp\'iricos. Se demuestra que la protecci\'on anti-degeneraci\'on es
+necesaria para \textbf{estimaci\'on consistente bajo censura selectiva},
+an\'aloga al estimador de Kaplan-Meier en an\'alisis de supervivencia.
+Se valida emp\'iricamente sobre $N=25$ trades reales con 38 ciclos de
+recalibraci\'on, mostrando que el sistema completo (entrada + salida
+adaptativa) genera un edge positivo de $+0.10\%$ por trade a pesar
+de que la se\~nal aislada tiene significancia marginal.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════
+\section{Introducci\'on y Motivaci\'on}
+\label{sec:intro}
+% ═══════════════════════════════════════════════════════════════
+
+El bot $\af$ Bifurcation Short opera en el mercado de futuros perpetuos
+de altcoins (Binance USDT-M) detectando inversiones del ``spring''
+de funding rate. El paper original \cite{epeloa2026bifurcation}
+formaliz\'o la se\~nal de entrada $\score$ como un proxy de la condici\'on
+$\af < 0$ en la ecuaci\'on de Langevin generalizada:
+
+\begin{equation}
+L\ddot{x} + \gamma\dot{x} + \kappa\,x = F_{\text{ext}} + \sigma\xi
+\label{eq:langevin}
+\end{equation}
+
+Sin embargo, el an\'alisis estad\'istico inicial ($N=30$ trades)
+revel\'o una tensi\'on fundamental: la se\~nal de entrada aislada
+tiene significancia marginal ($p \approx 0.09$--$0.18$ seg\'un el test),
+pero la separaci\'on bimodal entre winners y losers es altamente
+significativa ($p = 0.0006$). Esto sugiere que el edge no proviene
+de la se\~nal aislada sino del \textbf{sistema completo}: entrada +
+gesti\'on de salida adaptativa.
+
+Este documento formaliza matem\'aticamente por qu\'e funciona el
+sistema completo, integrando tres marcos te\'oricos:
+
+\begin{enumerate}[leftmargin=2em]
+\item La bifurcaci\'on $\af$ como \textbf{generador de distribuci\'on
+  de mezcla} (Secci\'on~\ref{sec:mixture}).
+\item El AEPS como \textbf{test secuencial de hip\'otesis no-param\'etrico}
+  (Secci\'on~\ref{sec:sprt}).
+\item La protecci\'on anti-degeneraci\'on como \textbf{estimaci\'on
+  consistente bajo censura} (Secci\'on~\ref{sec:censoring}).
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Modelo de Mezcla de Bifurcaci\'on}
+\label{sec:mixture}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Formulaci\'on del Modelo}
+
+\begin{definition}[Modelo de Mezcla $\af$]
+\label{def:mixture}
+Sea $\score \geq \theta_{\min}$ la condici\'on de entrada y sea
+$\bm{X} = (\text{MFE}, |\text{MAE}|, \text{ETD}, t_{\text{hold}})$
+el vector de resultados observado al cierre del trade. Definimos
+el modelo de mezcla:
+\begin{equation}
+p(\bm{X} \mid \score \geq \theta_{\min}) =
+  \pi_W \cdot f_W(\bm{X}) + (1 - \pi_W) \cdot f_L(\bm{X})
+\label{eq:mixture}
+\end{equation}
+donde $\pi_W = \Prob(\text{winner} \mid \text{entry})$ es la
+probabilidad de bifurcaci\'on exitosa, $f_W$ es la densidad
+de la poblaci\'on winner, y $f_L$ la densidad de la poblaci\'on loser.
+\end{definition}
+
+La clave conceptual es que la se\~nal $\score$ \textbf{no predice
+un retorno continuo}. Identifica las \textit{condiciones} para una
+bifurcaci\'on, pero si \'esta efectivamente ocurre depende de
+factores no observados al momento de la entrada: la magnitud
+residual de $F_{\text{ext}}$, la realizaci\'on del ruido $\sigma\xi$,
+y si $\kappa$ ha efectivamente cambiado de signo.
+
+\begin{proposition}[Interpretaci\'on F\'isica de la Mezcla]
+\label{prop:physics}
+En el framework Langevin~(\ref{eq:langevin}), las dos poblaciones
+corresponden a:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Cuenca $W$} (bifurcaci\'on ocurre): $\kappa$ cambia de
+  signo ($\af: {-} \to {+}$), la fuerza restauradora empuja a favor
+  del short, y $F_{\text{ext}} \to 0$ (exhaustion $\exh \geq 3$):
+  \begin{equation}
+  dx = \underbrace{-\kappa(x - x_{\text{eq}})}_{\text{restauradora, a favor}} dt
+    + \underbrace{F_{\text{ext}}}_{\to\,0} dt + \sigma\,dW
+  \end{equation}
+  Resultado: MFE alto, MAE bajo, cascada descendente.
+
+\item \textbf{Cuenca $L$} (bifurcaci\'on no ocurre): $F_{\text{ext}}$
+  contin\'ua dominando, el pump sigue activo, $\kappa$ a\'un no ha
+  cambiado de signo:
+  \begin{equation}
+  dx = \underbrace{-\kappa(x - x_{\text{eq}})}_{\text{d\'ebil o negativa}} dt
+    + \underbrace{F_{\text{ext}}}_{\text{dominante}} dt + \sigma\,dW
+  \end{equation}
+  Resultado: MFE bajo, MAE alto, precio sigue subiendo.
+\end{itemize}
+La incertidumbre sobre cu\'al cuenca dominar\'a es intr\'inseca a la
+din\'amica cerca del punto cr\'itico $\af = 0$.
+\end{proposition}
+
+
+\subsection{Validaci\'on Emp\'irica del Modelo de Mezcla}
+
+Se utiliza la ventana actual del calibrador AEPS: $N = 25$ trades
+(14W / 11L, WR = 56\%, calibraci\'on \#38).
+
+\begin{table}[H]
+\centering
+\caption{Par\'ametros emp\'iricos del modelo de mezcla ($N=25$).}
+\label{tab:mixture_params}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Poblaci\'on} & $\bm{n}$ & $\overline{\textbf{MFE}}$ &
+  $\overline{|\textbf{MAE}|}$ & \textbf{E-ratio} & $\overline{\textbf{PnL}}$ \\
+\midrule
+Winners ($f_W$) & 14 & 3.04\% & 0.96\% & \textbf{3.15} & $+1.76\%$ \\
+Losers ($f_L$) & 11 & 1.44\% & 3.14\% & \textbf{0.46} & $-2.02\%$ \\
+\midrule
+Mezcla total & 25 & 2.34\% & 1.92\% & 1.22 & $+0.10\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Test de Separabilidad}
+
+La hip\'otesis nula es que ambas poblaciones provienen de la
+misma distribuci\'on (i.e., la se\~nal no genera separaci\'on):
+
+\begin{align}
+H_0&: f_W = f_L \quad \text{(entrada no distingue poblaciones)} \\
+H_1&: f_W \neq f_L \quad \text{(se\~nal genera bimodalidad)}
+\end{align}
+
+\begin{table}[H]
+\centering
+\caption{Tests de separabilidad del modelo de mezcla.}
+\label{tab:separation_tests}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Test} & \textbf{Variable} & \textbf{Estad\'istico} & \textbf{$p$-value} \\
+\midrule
+Mann-Whitney $U$ & MFE$_W$ vs MFE$_L$ & $U = 116$ & $\bm{0.033}$ \\
+KL divergence & $D_{\text{KL}}(f_W \| f_L)$ en MFE & $0.357$ nats & --- \\
+KL divergence & $D_{\text{KL}}(f_W \| f_L)$ en MAE & $0.313$ nats & --- \\
+\midrule
+Separabilidad total & MFE + MAE & $0.670$ nats & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[thmbox, title=Resultado 1: Separabilidad Significativa]
+Con $N=25$ trades, la separaci\'on entre poblaciones es significativa
+al 5\% ($p = 0.033$, Mann-Whitney). La divergencia KL total de 0.67 nats
+confirma que las distribuciones son distinguibles: un clasificador
+que observa (MFE, MAE) tiene informaci\'on no trivial para asignar
+cada trade a su poblaci\'on de origen.
+\end{tcolorbox}
+
+
+\subsection{Contenido Informacional de la Se\~nal}
+
+\begin{definition}[Informaci\'on Mutua de la Se\~nal]
+\label{def:mutual_info}
+Sea $O \in \{W, L\}$ el outcome y sea $M = \mathbb{1}[\text{MFE} \geq \tau]$
+un indicador binario evaluado durante el trade. La informaci\'on
+mutua entre $M$ y $O$ mide cu\'anto reduce $M$ la incertidumbre
+sobre el outcome:
+\begin{equation}
+I(M; O) = H(O) - H(O \mid M)
+\label{eq:mutual_info}
+\end{equation}
+\end{definition}
+
+Con $\tau = 1\%$ y los datos actuales:
+
+\begin{align}
+H(O) &= -0.56 \log_2(0.56) - 0.44 \log_2(0.44) = 0.989 \text{ bits} \\
+\Prob(W \mid \text{MFE} \geq 1\%) &= 0.750 \quad (n = 16) \\
+\Prob(W \mid \text{MFE} < 1\%) &= 0.222 \quad (n = 9) \\
+H(O \mid M) &= \frac{16}{25} H_b(0.75) + \frac{9}{25} H_b(0.22) = 0.794 \text{ bits} \\
+I(M; O) &= 0.989 - 0.794 = \bm{0.195} \text{ bits}
+\label{eq:mi_calc}
+\end{align}
+
+\begin{tcolorbox}[defbox, title=Interpretaci\'on]
+Observar si el MFE cruza el 1\% durante el trade revela el
+\textbf{19.7\%} de la incertidumbre total sobre el outcome.
+Equivalentemente: un trade con MFE $\geq 1\%$ tiene 75\% de
+probabilidad de ser winner; uno con MFE $< 1\%$ solo 22\%.
+El MFE act\'ua como un \textit{likelihood ratio} en tiempo real,
+fundamentando su uso como estad\'istico de decisi\'on en AEPS.
+\end{tcolorbox}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{AEPS como Test Secuencial No-Param\'etrico}
+\label{sec:sprt}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Conexi\'on con el SPRT de Wald}
+
+El Sequential Probability Ratio Test (SPRT) de Wald \cite{wald1945sequential}
+es el procedimiento \'optimo para decidir secuencialmente entre dos
+hip\'otesis simples $H_0$ y $H_1$ dado un flujo de observaciones.
+El test acumula el log-likelihood ratio:
+
+\begin{equation}
+\Lambda_n = \sum_{i=1}^{n} \log \frac{f_1(x_i)}{f_0(x_i)}
+\label{eq:sprt_classic}
+\end{equation}
+
+y decide $H_1$ si $\Lambda_n \geq A$, $H_0$ si $\Lambda_n \leq B$,
+y contin\'ua si $B < \Lambda_n < A$.
+
+\begin{proposition}[AEPS como SPRT Impl\'icito]
+\label{prop:sprt_analog}
+El sistema AEPS implementa un an\'alogo no-param\'etrico del SPRT
+donde:
+\begin{itemize}[leftmargin=1.5em]
+\item $H_W$: el trade pertenece a la poblaci\'on winner ($f_W$)
+\item $H_L$: el trade pertenece a la poblaci\'on loser ($f_L$)
+\item Las ``observaciones'' son el estado $(MFE(t), MAE(t), t)$
+  evaluado cada 5 segundos
+\item Las ``fronteras'' $A$ y $B$ son los umbrales AEPS calibrados
+  emp\'iricamente
+\end{itemize}
+La diferencia clave es que AEPS no estima $f_W$ y $f_L$ param\'etricamente
+sino que usa percentiles de la distribuci\'on emp\'irica como
+proxies de las fronteras de Wald.
+\end{proposition}
+
+\subsection{Mapeo de Mecanismos AEPS a Fronteras SPRT}
+
+Cada mecanismo de salida del AEPS corresponde a una regi\'on de
+decisi\'on en el espacio $(MFE, t)$:
+
+\begin{table}[H]
+\centering
+\caption{Mapeo AEPS $\leftrightarrow$ SPRT.}
+\label{tab:sprt_mapping}
+\begin{tabularx}{\textwidth}{llXl}
+\toprule
+\textbf{Mecanismo AEPS} & \textbf{An\'alogo SPRT} & \textbf{Regi\'on de Decisi\'on} & \textbf{Umbral Actual} \\
+\midrule
+Early Abort & Accept $H_L$ & MFE $<$ $\theta_{\text{abort}}$ AND $t > t_{\text{abort}}$ & 0.62\%, 1.1h \\
+Partial TP & Evidence for $H_W$ & MFE $\geq$ $\theta_{\text{ptp}}$ & 1.14\% \\
+Trailing Stop & Confirm $H_W$, optimize exit & MFE $\geq$ $\theta_{\text{trail}}$ & 2.0\% \\
+Stop Loss & Accept $H_L$ (hard) & $|$MAE$| \geq$ $\theta_{\text{sl}}$ & 5.30\% \\
+Pump Capture & Strong $H_W$ + exhaustion & MFE $\geq 0.5|\Delta P|$ AND $\exh \geq 2$ & variable \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[font=\small]
+\begin{axis}[
+  width=14cm, height=8cm,
+  xlabel={Tiempo (horas)},
+  ylabel={MFE (\%)},
+  xmin=0, xmax=3.5,
+  ymin=0, ymax=8,
+  grid=major,
+  grid style={gray!15},
+  legend pos=north west,
+  legend style={font=\scriptsize, fill=white, fill opacity=0.9},
+  axis line style={gray!50},
+]
+  % Early abort zone (shaded)
+  \addplot[name path=abort_top, draw=none] coordinates {(1.1,0.62) (3.5,0.62)};
+  \addplot[name path=abort_bot, draw=none] coordinates {(1.1,0) (3.5,0)};
+  \addplot[fill=cred, fill opacity=0.08] fill between[of=abort_top and abort_bot];
+
+  % Partial TP zone (shaded)
+  \addplot[name path=ptp_top, draw=none] coordinates {(0,1.5) (3.5,1.5)};
+  \addplot[name path=ptp_bot, draw=none] coordinates {(0,1.14) (3.5,1.14)};
+  \addplot[fill=cgreen, fill opacity=0.06] fill between[of=ptp_top and ptp_bot];
+
+  % Trailing zone (shaded)
+  \addplot[name path=trail_top, draw=none] coordinates {(0,8) (3.5,8)};
+  \addplot[name path=trail_bot, draw=none] coordinates {(0,2.0) (3.5,2.0)};
+  \addplot[fill=cgreen, fill opacity=0.08] fill between[of=trail_top and trail_bot];
+
+  % AEPS boundary lines
+  \addplot[dashed, cred, thick] coordinates {(1.1,0) (1.1,0.62) (3.5,0.62)};
+  \addplot[dashed, cgreen] coordinates {(0,1.14) (3.5,1.14)};
+  \addplot[dashed, cblue, thick] coordinates {(0,2.0) (3.5,2.0)};
+
+  % Winner trajectories
+  \addplot[smooth, cgreen!80!black, thick, mark=none] coordinates {
+    (0,0) (0.1,0.3) (0.3,1.0) (0.5,2.1) (0.8,3.8) (1.0,5.7) (1.1,6.4)
+  };
+  \addplot[smooth, cgreen!60!black, mark=none] coordinates {
+    (0,0) (0.2,0.2) (0.5,0.8) (1.0,1.9) (1.5,2.8) (2.0,3.1)
+  };
+  \addplot[smooth, cgreen!40!black, mark=none] coordinates {
+    (0,0) (0.3,0.4) (0.6,1.0) (1.0,1.4) (1.5,1.7) (1.8,1.9)
+  };
+
+  % Loser trajectories
+  \addplot[smooth, cred!80!black, thick, mark=none] coordinates {
+    (0,0) (0.2,0.1) (0.5,0.3) (0.8,0.4) (1.1,0.45) (1.5,0.5)
+  };
+  \addplot[smooth, cred!60!black, mark=none] coordinates {
+    (0,0) (0.1,0.05) (0.4,0.15) (0.8,0.25) (1.1,0.3) (1.8,0.38)
+  };
+  \addplot[smooth, cred!40!black, mark=none] coordinates {
+    (0,0) (0.3,0.08) (0.6,0.2) (1.0,0.5) (1.3,0.55) (1.6,0.58)
+  };
+
+  % Labels on zones
+  \node[font=\scriptsize, cred] at (axis cs:2.5,0.3) {Accept $H_L$ (abort)};
+  \node[font=\scriptsize, cgreen!50!black] at (axis cs:0.5,1.32) {\scriptsize Evidence $H_W$ (PTP)};
+  \node[font=\scriptsize, cblue!70!black] at (axis cs:0.5,2.4) {\scriptsize Confirm $H_W$ (trail)};
+
+  % Legend
+  \addlegendimage{smooth, cgreen!80!black, thick}
+  \addlegendentry{Trayectorias $f_W$ (cascada)}
+  \addlegendimage{smooth, cred!80!black, thick}
+  \addlegendentry{Trayectorias $f_L$ (pump cont.)}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Espacio de fases $(t, \text{MFE})$ con fronteras AEPS.
+Trayectorias winners (verde) divergen r\'apidamente hacia MFE alto;
+trayectorias losers (rojo) se estancan debajo de $\theta_{\text{abort}}$.
+Las fronteras AEPS particionan el espacio en regiones de decisi\'on
+an\'alogas al SPRT de Wald.}
+\label{fig:phase_space}
+\end{figure}
+
+
+\subsection{Propiedades de Optimalidad}
+
+El SPRT cl\'asico es \'optimo en el sentido de que minimiza el
+n\'umero esperado de observaciones para un nivel dado de error
+tipo I ($\alpha$) y tipo II ($\beta$). AEPS hereda una forma
+d\'ebil de esta optimalidad:
+
+\begin{theorem}[Optimalidad Asint\'otica del Estimador por Percentiles]
+\label{thm:optimality}
+Sea $\theta^*$ la frontera de decisi\'on \'optima que minimiza
+el costo esperado de clasificaci\'on err\'onea:
+\begin{equation}
+\theta^* = \arg\min_\theta \left[
+  c_{\text{FP}} \cdot \Prob(\text{MFE} \geq \theta \mid H_L) +
+  c_{\text{FN}} \cdot \Prob(\text{MFE} < \theta \mid H_W)
+\right]
+\label{eq:optimal_boundary}
+\end{equation}
+donde $c_{\text{FP}}$ es el costo de un falso positivo (mantener un
+loser) y $c_{\text{FN}}$ el costo de un falso negativo (abortar un
+winner). Si $c_{\text{FP}} = c_{\text{FN}}$, entonces $\theta^*$
+coincide con el punto de cruce de las CDF emp\'iricas de MFE$_W$ y
+MFE$_L$, que est\'a bien aproximado por percentiles intermedios
+de cada distribuci\'on.
+\end{theorem}
+
+\begin{proof}[Argumento]
+Con costos sim\'etricos, $\theta^*$ minimiza el error total de
+clasificaci\'on. Bajo la mezcla emp\'irica, esto equivale a encontrar
+el punto donde $\pi_W f_W(\theta) = (1-\pi_W) f_L(\theta)$
+(interseccion de densidades ponderadas). El percentil $P_{50}$
+de MFE$_L$ = 0.62\% y $P_{25}$ de MFE$_W$ = 1.14\% acotan
+este punto de cruce. El early abort usa $P_{50}$(MFE$_L$) y
+el partial TP usa $P_{25}$(MFE$_W$), cubriendo ambos lados
+de la frontera \'optima.
+\end{proof}
+
+
+\subsection{Eficiencia del Clasificador Secuencial}
+
+La eficiencia de AEPS como clasificador se mide por la tasa de
+verdaderos positivos y falsos positivos de cada mecanismo:
+
+\begin{table}[H]
+\centering
+\caption{Performance del clasificador secuencial AEPS ($N=25$).}
+\label{tab:classifier_perf}
+\begin{tabular}{lcccl}
+\toprule
+\textbf{Mecanismo} & \textbf{TP} & \textbf{FP} & \textbf{Precisi\'on} & \textbf{Acci\'on} \\
+\midrule
+Early Abort & 4 losers cortados & 1 winner perdido & 80\% & Cortar r\'apido \\
+SL ($\leq 5.3\%$ MAE) & cubre 91\% de losers & --- & 91\% & Proteger capital \\
+PTP ($\geq 1.14\%$ MFE) & triggerea en 71\% winners & --- & 71\% & Asegurar ganancia \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Estimaci\'on Consistente bajo Censura Selectiva}
+\label{sec:censoring}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{El Problema de la Censura}
+
+El early abort introduce un mecanismo de \textbf{censura por la
+derecha} en las observaciones de MAE y $t_{\text{MFE}}$. Cuando
+un trade es abortado, no observamos:
+
+\begin{itemize}[leftmargin=1.5em]
+\item La MAE real que hubiera alcanzado sin intervenci\'on
+\item El tiempo completo hasta que el MFE se hubiera estabilizado
+\end{itemize}
+
+\begin{definition}[Censura por Early Abort]
+\label{def:censoring}
+Sea $T^*$ la variable aleatoria del tiempo real de permanencia
+(contrafactual) y $C$ el tiempo de censura (early abort trigger).
+Observamos $T = \min(T^*, C)$ y el indicador
+$\delta = \mathbb{1}[T^* \leq C]$. Un trade abortado tiene
+$\delta = 0$: su MAE y $t_{\text{MFE}}$ est\'an censurados.
+\end{definition}
+
+\begin{proposition}[Inconsistencia del Estimador Na\"ive]
+\label{prop:inconsistency}
+Si se incluyen trades abortados en la calibraci\'on de SL y
+$t_{\text{abort}}$ sin correcci\'on:
+\begin{equation}
+\hat{\theta}_{\text{SL}}^{(n+1)} = g\!\left(\text{MAE}_{\text{todos}}\right)
+  < \hat{\theta}_{\text{SL}}^{(n)}
+\end{equation}
+porque $|\text{MAE}_{\text{abort}}| < |\text{MAE}_{\text{natural}}|$
+sistem\'aticamente (truncamiento). Esto genera un \textbf{feedback
+loop degenerativo}:
+\begin{equation}
+\text{SL}_{n} \downarrow \;\Rightarrow\;
+\text{m\'as aborts} \;\Rightarrow\;
+\overline{|\text{MAE}|} \downarrow \;\Rightarrow\;
+\text{SL}_{n+1} \downarrow \;\Rightarrow\; \cdots
+\label{eq:feedback}
+\end{equation}
+\end{proposition}
+
+\subsection{Soluci\'on: Estimaci\'on Estratificada}
+
+La soluci\'on implementada en AEPS es an\'aloga al estimador de
+Kaplan-Meier \cite{kaplan1958nonparametric} en an\'alisis de
+supervivencia: se excluyen las observaciones censuradas de los
+c\'alculos que dependen de la duraci\'on completa.
+
+\begin{definition}[Partici\'on de Losers]
+\label{def:partition}
+Sea $\mathcal{L} = \mathcal{L}_N \cup \mathcal{L}_A$ donde:
+\begin{align}
+\mathcal{L}_N &= \{t \in \mathcal{L} : \text{exit\_reason} \neq \text{``early\_abort''}\}
+  \quad \text{(losers naturales, no censurados)} \\
+\mathcal{L}_A &= \{t \in \mathcal{L} : \text{exit\_reason} = \text{``early\_abort''}\}
+  \quad \text{(losers abortados, censurados)}
+\end{align}
+\end{definition}
+
+Las reglas de uso son:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{MAE y $t_{\text{MFE}}$}: usar solo $\mathcal{L}_N$
+  (excluir observaciones censuradas)
+\item \textbf{MFE de losers}: usar $\mathcal{L}_N \cup \mathcal{L}_A$
+  (el MFE al momento del abort es real, no est\'a truncado por el
+  mecanismo de censura)
+\end{itemize}
+
+\subsection{Validaci\'on Emp\'irica de la Correcci\'on}
+
+\begin{table}[H]
+\centering
+\caption{Impacto de la censura en la estimaci\'on ($N=25$, $n_L=11$).}
+\label{tab:censoring_impact}
+\begin{tabular}{lccl}
+\toprule
+\textbf{M\'etrica} & \textbf{Con censura} & \textbf{Sin censura ($\mathcal{L}_N$)} & \textbf{Distorsi\'on} \\
+\midrule
+$\overline{|\text{MAE}|}_L$ & 3.14\% & 3.85\% & $-0.71$ pp \\
+$n$ losers & 11 & 7 (naturales) & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La diferencia de $0.71$ puntos porcentuales entre la MAE con y sin
+censurados es sustancial: representar\'ia un SL calibrado $\sim$15\%
+m\'as estrecho, que acelerar\'ia la espiral degenerativa de~(\ref{eq:feedback}).
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Ecuaci\'on Fundamental del Edge}
+\label{sec:edge}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Descomposici\'on del Valor Esperado}
+
+\begin{theorem}[Descomposici\'on del Edge]
+\label{thm:edge}
+El PnL esperado por trade se descompone como:
+\begin{equation}
+\E[\text{PnL}] = \underbrace{\pi_W}_{\text{se\~nal}}
+  \cdot \underbrace{\E[\text{PnL} \mid W]}_{\text{AEPS captura}}
+  + \underbrace{(1-\pi_W)}_{\text{se\~nal}}
+  \cdot \underbrace{\E[\text{PnL} \mid L]}_{\text{AEPS protecci\'on}}
+\label{eq:edge}
+\end{equation}
+donde $\pi_W$ depende exclusivamente de la se\~nal de entrada (fija)
+y $\E[\text{PnL} \mid W]$, $\E[\text{PnL} \mid L]$ dependen del
+sistema de salida (adaptativo).
+\end{theorem}
+
+El principio \textit{``fijar las entradas, adaptar las salidas''}
+tiene ahora justificaci\'on formal: la se\~nal controla $\pi_W$
+(la probabilidad de estar en la cuenca correcta), mientras AEPS
+controla la magnitud de captura y protecci\'on condicionales.
+
+\subsection{Estado Actual del Edge}
+
+\begin{table}[H]
+\centering
+\caption{Descomposici\'on emp\'irica del edge ($N=25$).}
+\label{tab:edge_decomp}
+\begin{tabular}{lll}
+\toprule
+\textbf{Componente} & \textbf{Valor} & \textbf{Controlado por} \\
+\midrule
+$\pi_W$ & 0.560 & Se\~nal $\score$ (fija) \\
+$\E[\text{PnL} \mid W]$ & $+1.762\%$ & AEPS (captura) \\
+$\E[\text{PnL} \mid L]$ & $-2.016\%$ & AEPS (protecci\'on) \\
+\midrule
+$\E[\text{PnL}]$ & $+0.100\%$ & Sistema completo \\
+\midrule
+Ratio de asimetr\'ia $\rho$ & $|\E[W]| / |\E[L]| = 0.874$ & AEPS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[keybox, title=Condici\'on de Rentabilidad]
+El sistema es rentable si y solo si:
+\begin{equation}
+\pi_W \cdot \E[\text{PnL} \mid W] + (1-\pi_W) \cdot \E[\text{PnL} \mid L] > 0
+\label{eq:profitability}
+\end{equation}
+Equivalentemente, el ratio de asimetr\'ia debe satisfacer:
+\begin{equation}
+\rho = \frac{|\E[\text{PnL} \mid W]|}{|\E[\text{PnL} \mid L]|}
+  > \frac{1 - \pi_W}{\pi_W} = \frac{0.44}{0.56} = 0.786
+\label{eq:rho_condition}
+\end{equation}
+Con $\rho = 0.874 > 0.786$, la condici\'on se satisface con un
+margen de $+11\%$. El margen es estrecho, lo que subraya la
+importancia de optimizar $\rho$ via AEPS.
+\end{tcolorbox}
+
+
+\subsection{Sensibilidad del Edge}
+
+El edge es sensible tanto a $\pi_W$ como a $\rho$. Derivando:
+
+\begin{equation}
+\frac{\partial\, \E[\text{PnL}]}{\partial \pi_W}
+  = \E[\text{PnL} \mid W] - \E[\text{PnL} \mid L]
+  = 1.76\% - (-2.02\%) = 3.78\% \text{ por pp de WR}
+\end{equation}
+
+\begin{equation}
+\frac{\partial\, \E[\text{PnL}]}{\partial \rho}
+  = \pi_W \cdot |\E[\text{PnL} \mid L]|
+  = 0.56 \times 2.02\% = 1.13\% \text{ por unidad de } \rho
+\end{equation}
+
+Un aumento de WR de 56\% a 60\% ($+4$ pp) aumentar\'ia el edge
+en $+0.15\%$ (se\~nal); un aumento de $\rho$ de 0.87 a 1.20
+($+0.33$) aumentar\'ia el edge en $+0.37\%$ (AEPS). Esto confirma
+que \textbf{la palanca principal est\'a en AEPS} ($\rho$), no en la
+se\~nal ($\pi_W$).
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{An\'alisis de Eficiencia de Captura (PMFE)}
+\label{sec:pmfe}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Definici\'on y M\'etrica}
+
+\begin{definition}[Profit-to-MFE Ratio]
+\label{def:pmfe}
+El PMFE mide la fracci\'on del recorrido favorable capturada:
+\begin{equation}
+\text{PMFE} = \frac{\text{PnL}}{\text{MFE}} \in [-\infty, 1]
+\end{equation}
+PMFE $= 1$ indica captura perfecta (cerr\'o en el m\'aximo favorable);
+PMFE $= 0$ indica que devolvi\'o toda la ganancia; PMFE $< 0$ indica
+p\'erdida neta a pesar de haber tenido excursi\'on favorable.
+\end{definition}
+
+\subsection{PMFE por Mecanismo de Salida}
+
+\begin{table}[H]
+\centering
+\caption{Eficiencia de captura por mecanismo de salida ($N=25$).}
+\label{tab:pmfe}
+\begin{tabular}{lccccl}
+\toprule
+\textbf{Exit Reason} & $\bm{n}$ & $\overline{\textbf{MFE}}$ &
+  $\overline{\textbf{PMFE}}$ & \textbf{$\E[\text{PnL}]$} & \textbf{Evaluaci\'on} \\
+\midrule
+\texttt{pump\_capture} & 4 & 2.84\% & $\bm{0.894}$ & $+2.78\%$ & Excelente \\
+\texttt{profit\_lock} & 3 & 1.66\% & 0.276 & $+0.41\%$ & Conservador \\
+\texttt{trailing\_stop} & 9 & 3.77\% & 0.184 & $+0.41\%$ & \textcolor{cred}{Pobre} \\
+\texttt{early\_abort} & 5 & 0.45\% & $-1.641$ & $-0.43\%$ & N/A (clasificador) \\
+\texttt{stop\_loss} & 4 & 1.21\% & $-5.076$ & $-4.29\%$ & N/A (protecci\'on) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Diagn\'ostico: El Problema del Trailing Stop}
+
+El trailing stop es el mecanismo dominante ($n=9$, 36\% de trades)
+pero tiene el PMFE m\'as bajo entre los mecanismos de captura
+(0.184). Esto significa que devuelve el \textbf{82\% del MFE}
+antes de cerrar.
+
+La p\'erdida de captura se cuantifica como ETD/MFE en winners:
+
+\begin{equation}
+\overline{\left(\frac{\text{ETD}}{\text{MFE}}\right)}_W = 0.450
+\quad \Rightarrow \quad
+\text{PMFE impl\'icito} = 1 - 0.450 = 0.550
+\end{equation}
+
+El callback actual de AEPS es 30\% (piso del guardrail). La
+diferencia entre el callback nominal (30\%) y la captura real
+(55\%) se debe a la \textbf{zona de interpolaci\'on breakeven--trailing}
+donde el piso de protecci\'on es pr\'acticamente nulo.
+
+\begin{tcolorbox}[warnbox, title=Oportunidad de Mejora Cuantificada]
+Si el PMFE del trailing mejorara de 0.18 a 0.40 (factible
+con ajustes en la zona de interpolaci\'on):
+\begin{align}
+\E[\text{PnL} \mid W]_{\text{nuevo}} &\approx 2.5\% \quad (\text{vs } 1.76\% \text{ actual}) \\
+\rho_{\text{nuevo}} &= 2.5 / 2.02 = 1.24 \quad (\text{vs } 0.87 \text{ actual}) \\
+\E[\text{PnL}]_{\text{nuevo}} &= 0.56 \times 2.5\% + 0.44 \times (-2.02\%) = +0.51\%
+\end{align}
+Un salto de $+0.10\%$ a $+0.51\%$ por trade ($5\times$ mejora).
+\end{tcolorbox}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Calibraci\'on AEPS: F\'ormulas y Justificaci\'on}
+\label{sec:calibration}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{F\'ormulas de Recalibraci\'on}
+
+AEPS recalibra en cada trade cerrado usando la ventana deslizante
+de $N=25$ trades. Los par\'ametros se derivan de percentiles de las
+distribuciones emp\'iricas, particionadas en winners ($\mathcal{W}$),
+losers naturales ($\mathcal{L}_N$) y todos los losers ($\mathcal{L}$):
+
+\begin{table}[H]
+\centering
+\caption{F\'ormulas de recalibraci\'on AEPS con justificaci\'on estad\'istica.}
+\label{tab:calibration}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\textbf{Par\'ametro} & \textbf{F\'ormula y Justificaci\'on} & \textbf{Actual} & \textbf{Bounds} \\
+\midrule
+\param{stop\_loss} & $P_{75}(|\text{MAE}|_{\mathcal{L}_N}) + 0.5\%$. Usa $P_{75}$ para
+  cubrir el 75\% de p\'erdidas naturales. Buffer de $+0.5\%$ absorbe
+  slippage. Excluye abortados ($\mathcal{L}_N$) para evitar censura. & 5.30\% & [2\%, 8\%] \\
+\addlinespace
+\param{partial\_tp} & $P_{25}(\text{MFE}_{\mathcal{W}})$. Umbral conservador:
+  el 75\% de winners supera este valor. Act\'ua como evidencia
+  m\'inima para $H_W$. & 1.14\% & [0.8\%, 4\%] \\
+\addlinespace
+\param{trail\_act} & $P_{50}(\text{MFE}_{\mathcal{W}})$. La mediana de MFE
+  de winners define el punto donde $H_W$ est\'a confirmado con
+  confianza razonable. & 2.00\% & [2\%, 8\%] \\
+\addlinespace
+\param{trail\_cb} & $P_{25}(\text{ETD}/\text{MFE})_{\mathcal{W}}$. Usa $P_{25}$
+  (no $P_{50}$) para romper la autocorrelaci\'on con trailing exits
+  que inflan ETD/MFE. & 30\% & [30\%, 65\%] \\
+\addlinespace
+\param{abort\_mfe} & $P_{50}(\text{MFE}_{\mathcal{L}})$. La mediana de MFE
+  de todos los losers separa naturalmente trades muertos de los que
+  tuvieron excursi\'on antes de revertir. & 0.62\% & [0.3\%, 1.0\%] \\
+\addlinespace
+\param{abort\_hours} & $P_{75}(t_{\text{MFE}})_{\mathcal{L}_N} / 3600$. Usa
+  solo losers naturales (no abortados) para evitar que tiempos
+  truncados compriman el umbral. & 1.08h & [0.75h, 3h] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+\subsection{Warmup Blend y Convergencia}
+
+Durante las primeras calibraciones ($15 \leq n < 25$), AEPS
+interpola linealmente entre par\'ametros est\'aticos $\theta_0$
+y adaptativos $\hat\theta$:
+
+\begin{equation}
+\theta_{\text{eff}} = (1-\alpha)\,\theta_0 + \alpha\,\hat\theta,
+\quad \alpha = \frac{n - 15}{10} \in [0, 1]
+\end{equation}
+
+Con $n = 25$ (actual), $\alpha = 1.0$: el sistema opera en modo
+100\% adaptativo.
+
+\subsection{ATR Scaling: Ajuste por Volatilidad}
+
+Los par\'ametros sensibles a escala se ajustan por la raz\'on
+entre el ATR actual y la mediana hist\'orica:
+
+\begin{equation}
+\theta_{\text{scaled}} = \text{clamp}\!\left(
+  \theta_{\text{base}} \times \frac{\text{ATR}_{\text{actual}}}
+  {\widetilde{\text{ATR}}_{\text{hist}}},
+  \; [\theta_{\min}, \theta_{\max}]
+\right)
+\end{equation}
+
+Par\'ametros que \textbf{no} escalan con ATR (y por qu\'e):
+\begin{itemize}[leftmargin=1.5em]
+\item \param{trailing\_callback}: es un ratio (ETD/MFE),
+  normalizado por escala.
+\item \param{abort\_mfe}: detecta calidad de se\~nal, no magnitud
+  de movimiento. Un trade muerto es muerto independientemente del ATR.
+\item \param{abort\_hours}: independiente de la magnitud del movimiento.
+\end{itemize}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Detecci\'on de Cambio de R\'egimen}
+\label{sec:regime}
+% ═══════════════════════════════════════════════════════════════
+
+El calibrador asume estacionariedad local en la ventana de $N$ trades.
+Para detectar violaciones, implementa un test de split-window:
+
+\begin{enumerate}[leftmargin=2em]
+\item Dividir la ventana en dos mitades.
+\item Aplicar Z-test de win rate y Welch $t$-test de PnL medio:
+  \begin{align}
+  z_{\text{WR}} &= \frac{\hat{p}_2 - \hat{p}_1}
+    {\sqrt{\hat{p}(1-\hat{p})(1/n_1 + 1/n_2)}} \\
+  t_{\text{PnL}} &= \frac{\bar{x}_2 - \bar{x}_1}
+    {\sqrt{s_1^2/n_1 + s_2^2/n_2}}
+  \end{align}
+\item Si $|z| > 1.96$ o $|t| > 1.96$ (bilateral, $p < 0.05$),
+  \textbf{y} la mitad reciente tiene $\geq 5$ W y $\geq 3$ L:
+  recalibrar solo con la mitad reciente.
+\end{enumerate}
+
+Con $N=25$, el test tiene baja potencia intencionalmente: solo detecta
+cambios de r\'egimen grandes, evitando reaccionar al ruido.
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Datos Emp\'iricos Completos}
+\label{sec:data}
+% ═══════════════════════════════════════════════════════════════
+
+\subsection{Ventana Actual del Calibrador (N=25)}
+
+\begin{table}[H]
+\centering
+\caption{Estad\'isticas descriptivas por mecanismo de salida.}
+\label{tab:exit_stats}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Exit Reason} & $\bm{n}$ & $\overline{\textbf{MFE}}$ &
+  $\overline{|\textbf{MAE}|}$ & $\overline{\textbf{PnL}}$ &
+  $\overline{\textbf{Hold}}$ \\
+\midrule
+pump\_capture & 4 & 2.84\% & 1.44\% & $+2.78\%$ & 23.8h \\
+trailing\_stop & 9 & 3.77\% & 1.70\% & $+0.41\%$ & 1.2h \\
+profit\_lock & 3 & 1.66\% & 1.06\% & $+0.41\%$ & 2.5h \\
+early\_abort & 5 & 0.45\% & 1.67\% & $-0.43\%$ & 1.0h \\
+stop\_loss & 4 & 1.21\% & 4.52\% & $-4.29\%$ & 1.8h \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Score vs Win Rate}
+
+\begin{table}[H]
+\centering
+\caption{Win rate por nivel de score al momento de entrada.}
+\label{tab:score_wr}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Score} & $\bm{n}$ & \textbf{WR} & $\overline{\textbf{MFE}}$ & \textbf{Observaci\'on} \\
+\midrule
+$\leq 2.5$ & 3 & 0\% & 1.13\% & Entradas d\'ebiles \\
+3.0 & 3 & 67\% & 4.63\% & Buena direcci\'on \\
+3.5 & 10 & 70\% & 1.64\% & Core, WR alto \\
+4.0 & 6 & 50\% & 3.30\% & Mixto \\
+$\geq 4.5$ & 2 & 50\% & 2.07\% & Pocos datos \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{remark}
+Los scores $\leq 2.5$ tienen 0\% WR ($n=3$), sugiriendo que la
+se\~nal tiene un umbral efectivo por debajo del cual no deber\'ia
+operar. Sin embargo, $n=3$ es insuficiente para conclusiones firmes.
+El score 3.5 tiene el WR m\'as alto (70\%) con $n=10$, lo que sugiere
+que el ``sweet spot'' puede estar en scores moderados, no extremos.
+\end{remark}
+
+
+\subsection{Estado del Calibrador}
+
+Tras 38 ciclos de recalibraci\'on, los par\'ametros adaptativos actuales son:
+
+\begin{table}[H]
+\centering
+\caption{Par\'ametros AEPS actuales (calibraci\'on \#38, blend 100\%).}
+\label{tab:current_aeps}
+\begin{tabular}{lccl}
+\toprule
+\textbf{Par\'ametro} & \textbf{Valor} & \textbf{Bounds} & \textbf{En guardrail?} \\
+\midrule
+Stop Loss & 5.30\% & [2\%, 8\%] & No \\
+Partial TP MFE & 1.14\% & [0.8\%, 4\%] & No \\
+Partial TP Fraction & 33\% & [25\%, 50\%] & No \\
+Profit Lock & 0.57\% & [0.3\%, 1.5\%] & No \\
+Breakeven Trigger & 1.37\% & [1\%, 4\%] & No \\
+Trailing Activation & 2.00\% & [2\%, 8\%] & \textcolor{corange}{S\'i (piso)} \\
+Trailing Callback & 30\% & [30\%, 65\%] & \textcolor{corange}{S\'i (piso)} \\
+Early Abort Hours & 1.08h & [0.75h, 3h] & No \\
+Early Abort MFE & 0.62\% & [0.3\%, 1.0\%] & No \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{remark}
+Dos par\'ametros est\'an en su guardrail inferior: trailing activation
+y trailing callback. Esto indica que la distribuci\'on emp\'irica
+``quiere'' valores m\'as agresivos de los permitidos. El guardrail
+est\'a cumpliendo su rol de seguridad, pero vale la pena evaluar
+si los pisos son apropiados a medida que se acumulen m\'as datos.
+\end{remark}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{S\'intesis: Por Qu\'e Funciona el Sistema Completo}
+\label{sec:synthesis}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{tcolorbox}[keybox, title=Teorema Central (Informal)]
+El sistema $\af$ Bifurcation Short genera un edge positivo porque:
+\begin{enumerate}[leftmargin=1.5em]
+\item La \textbf{se\~nal de entrada} $\score$ act\'ua como un
+  clasificador binario ruidoso con $\pi_W = 0.56$ --- ligeramente
+  mejor que random, pero la separaci\'on entre las dos poblaciones
+  generadas es altamente significativa ($p = 0.033$).
+
+\item El \textbf{AEPS} implementa un test secuencial de hip\'otesis
+  no-param\'etrico que clasifica en tiempo real si cada trade
+  pertenece a la cuenca $W$ o $L$, usando las fronteras
+  calibradas emp\'iricamente como regiones de decisi\'on.
+
+\item La \textbf{protecci\'on anti-degeneraci\'on} asegura estimaci\'on
+  consistente al tratar los trades abortados como observaciones
+  censuradas, evitando el feedback loop.
+
+\item El edge total $\E[\text{PnL}] = +0.10\%$ emerge de la
+  combinaci\'on: $\pi_W$ determina la fracci\'on de trades en
+  la cuenca correcta, y AEPS determina cu\'anto se extrae de
+  cada cuenca. Ninguno de los dos genera edge por s\'i solo.
+
+\item La \textbf{palanca principal de mejora} est\'a en $\rho$
+  (ratio de asimetr\'ia), controlado por AEPS. Mejorar el PMFE
+  del trailing stop de 0.18 a 0.40 quintuplicar\'ia el edge.
+\end{enumerate}
+\end{tcolorbox}
+
+
+% ═══════════════════════════════════════════════════════════════
+\section{Trabajo Futuro}
+\label{sec:future}
+% ═══════════════════════════════════════════════════════════════
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Formalizar el SPRT param\'etrico}: estimar $f_W$ y $f_L$
+  expl\'icitamente (posiblemente como log-normales) y derivar
+  fronteras de Wald \'optimas.
+\item \textbf{Informaci\'on mutua progresiva}: calcular $I(M_t; O)$
+  como funci\'on del tiempo $t$ para determinar el momento \'optimo
+  de decisi\'on.
+\item \textbf{Kelly adaptativo}: conectar la fracci\'on de Kelly
+  con los par\'ametros del modelo de mezcla para sizing \'optimo.
+\item \textbf{Zona de interpolaci\'on BE--trailing}: redise\~nar para
+  mejorar el PMFE del trailing stop.
+\item \textbf{Validaci\'on con $N \geq 50$}: confirmar significancia
+  al 5\% del edge global y estabilidad de $\pi_W$.
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════
+\begin{thebibliography}{10}
+% ═══════════════════════════════════════════════════════════════
+
+\bibitem{epeloa2026bifurcation}
+J.~Epeloa,
+``Trading the $\alpha_f$ Bifurcation: Short Strategies in Perpetual Futures,''
+Technical Report, Mapplics, 2026.
+
+\bibitem{wald1945sequential}
+A.~Wald,
+``Sequential Tests of Statistical Hypotheses,''
+\textit{The Annals of Mathematical Statistics}, vol.~16, no.~2,
+pp.~117--186, 1945.
+
+\bibitem{kaplan1958nonparametric}
+E.~L.~Kaplan and P.~Meier,
+``Nonparametric Estimation from Incomplete Observations,''
+\textit{Journal of the American Statistical Association}, vol.~53,
+no.~282, pp.~457--481, 1958.
+
+\bibitem{leung2021trailing}
+T.~Leung and H.~Zhang,
+``Optimal Trading with a Trailing Stop,''
+\textit{Applied Mathematics \& Optimization}, vol.~83,
+pp.~669--698, 2021.
+
+\bibitem{bayesian_sl}
+``Determining Optimal Stop-Loss Thresholds via Bayesian Maximum
+Drawdown Analysis,''
+arXiv:1609.00869, 2016.
+
+\bibitem{tartakovsky2014sequential}
+A.~Tartakovsky, I.~Nikiforov, and M.~Basseville,
+\textit{Sequential Analysis: Hypothesis Testing and Changepoint Detection},
+CRC Press, 2014.
+
+\bibitem{cover2006elements}
+T.~M.~Cover and J.~A.~Thomas,
+\textit{Elements of Information Theory}, 2nd ed.,
+Wiley-Interscience, 2006.
+
+\bibitem{filippos2018tpsl}
+F.~Filippos et al.,
+``Take Profit and Stop Loss Trading Strategies Comparison in Combination
+with an MACD Trading System,''
+\textit{Journal of Risk and Financial Management}, vol.~11, no.~3, 2018.
+
+\bibitem{palazzi2025crypto}
+R.~B.~Palazzi et al.,
+``Trading Games: Beating Passive Strategies in the Bullish Crypto Market,''
+\textit{Journal of Futures Markets}, 2025.
+
+\end{thebibliography}
+
+
+\end{document}
