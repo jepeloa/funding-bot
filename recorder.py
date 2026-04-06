@@ -868,26 +868,35 @@ async def run_recorder():
     if telegram and telegram.enabled:
         from telegram_bot import (
             telegram_command_loop, periodic_status_report,
+            periodic_ip_monitor, fetch_public_ip,
             build_status_text, build_trades_text, build_pnl_text,
             build_balance_text,
         )
+
+        async def _send_ip():
+            ip = await fetch_public_ip() or "no disponible"
+            await telegram.send(f"🌐 IP pública: <code>{ip}</code>")
+
         # Register command handlers
         telegram.register_command("status", lambda: telegram.send(build_status_text(strategy)))
         telegram.register_command("trades", lambda: telegram.send(build_trades_text(strategy)))
         telegram.register_command("pnl", lambda: telegram.send(build_pnl_text(strategy)))
         telegram.register_command("balance", lambda: _run_and_send(telegram, strategy))
+        telegram.register_command("ip", _send_ip)
         telegram.register_command("help", lambda: telegram.send(
             "📖 <b>Comandos</b>\n"
             "/status — Estado del bot\n"
             "/trades — Trades abiertos\n"
             "/pnl — PnL y equity\n"
             "/balance — Balance Binance\n"
+            "/ip — IP pública actual\n"
             "/help — Este mensaje"
         ))
         _start_task("tg-commands", lambda: telegram_command_loop(telegram))
         _start_task("tg-status", lambda: periodic_status_report(
             telegram, strategy, config.TELEGRAM_STATUS_INTERVAL,
         ))
+        _start_task("tg-ip-monitor", lambda: periodic_ip_monitor(telegram, 120.0))
         await telegram.notify_startup(
             n_symbols=len(symbols), n_variants=len(config.VARIANTS),
             mode=config.TRADING_MODE, account=config.ACTIVE_ACCOUNT,

@@ -97,6 +97,7 @@ class VariantTradeState:
     partial_tp_taken: bool = False
     original_qty: float = 0.0   # qty antes del cierre parcial
     partial_tp_pnl_usd: float = 0.0  # PnL realizado del TP parcial
+    zombie_checked: bool = False  # True después de evaluar zombie_kill (una sola vez)
 
 
 class SymbolState:
@@ -1078,6 +1079,7 @@ class StrategyEngine:
         vtrade.entry_commission = entry_commission if will_be_live else 0.0
         vtrade.partial_tp_taken = False
         vtrade.original_qty = actual_qty
+        vtrade.zombie_checked = False
 
         mode_tag = trade_mode.upper()
         log.warning(
@@ -1153,6 +1155,23 @@ class StrategyEngine:
               and hold_hours > ap.early_abort_hours
               and vtrade.mfe < ap.early_abort_max_mfe):
             exit_reason = "early_abort"
+
+        # ── Zombie Kill: post-abort MFE filter (one-time check) ──
+        # Si pasó el abort window, MFE sobrevivió el abort pero sigue
+        # por debajo del zombie threshold → trade muerto, cerrar.
+        if (not exit_reason
+              and not vtrade.zombie_checked
+              and ap.early_abort_hours > 0
+              and hold_hours > ap.early_abort_hours):
+            vtrade.zombie_checked = True
+            zombie_thresh = STRATEGY.get("mfe_zombie_threshold", 0.012)
+            if vtrade.mfe < zombie_thresh:
+                exit_reason = "zombie_kill"
+                log.warning(
+                    f"🧟 [{vname.upper()}] Zombie kill {state.symbol} | "
+                    f"MFE {vtrade.mfe:.2%} < {zombie_thresh:.2%} "
+                    f"después de {hold_hours*60:.0f}min"
+                )
 
         # ── Partial TP + Profit Lock (adaptive) ──
         if not exit_reason and ap.partial_tp_mfe_pct > 0 and ap.partial_tp_fraction > 0 and not vtrade.partial_tp_taken:
@@ -1500,6 +1519,7 @@ class StrategyEngine:
         vtrade.original_qty = 0.0
         vtrade.partial_tp_pnl_usd = 0.0
         vtrade.mfe_timestamp = 0.0
+        vtrade.zombie_checked = False
 
         # NO resetear energy — se disipa naturalmente cuando el score baja
         # (la energía es estado de mercado compartido, no de un trade)

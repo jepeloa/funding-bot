@@ -140,6 +140,7 @@ class TelegramNotifier:
 
     async def notify_startup(self, n_symbols: int, n_variants: int, mode: str,
                              account: str, variant: str):
+        ip = await fetch_public_ip() or "desconocida"
         text = (
             f"🚀 <b>Bot Iniciado</b>\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -147,7 +148,8 @@ class TelegramNotifier:
             f"🎯 Variantes: {n_variants}\n"
             f"⚙️ Modo: <b>{mode}</b>\n"
             f"🔑 Cuenta: <b>{account}</b>\n"
-            f"📊 Variante activa: <b>{variant}</b>"
+            f"📊 Variante activa: <b>{variant}</b>\n"
+            f"🌐 IP: <code>{ip}</code>"
         )
         await self.send(text)
 
@@ -381,3 +383,64 @@ async def telegram_command_loop(bot: TelegramNotifier):
         except Exception as e:
             log.debug(f"Telegram poll error: {e}")
         await asyncio.sleep(2)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  IP change monitor
+# ══════════════════════════════════════════════════════════════════
+
+_IP_CHECK_URLS = [
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+    "https://icanhazip.com",
+]
+
+
+async def fetch_public_ip() -> Optional[str]:
+    """Obtiene la IP pública actual usando múltiples proveedores como fallback."""
+    async with aiohttp.ClientSession() as session:
+        for url in _IP_CHECK_URLS:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        ip = (await resp.text()).strip()
+                        if ip and len(ip) <= 45:  # IPv4 o IPv6 válida
+                            return ip
+            except Exception:
+                continue
+    return None
+
+
+async def periodic_ip_monitor(bot: TelegramNotifier, interval: float = 120.0):
+    """
+    Monitorea cambios de IP pública cada N segundos (default 2min).
+    Notifica por Telegram cuando la IP cambia — indica posible
+    reconexión del ISP y pérdida de conexión con Binance.
+    """
+    current_ip = await fetch_public_ip()
+    if current_ip:
+        log.info(f"[ip-monitor] IP pública inicial: {current_ip}")
+    else:
+        log.warning("[ip-monitor] No se pudo obtener IP pública inicial")
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            new_ip = await fetch_public_ip()
+            if new_ip is None:
+                log.warning("[ip-monitor] No se pudo obtener IP pública")
+                continue
+            if current_ip and new_ip != current_ip:
+                log.warning(f"[ip-monitor] IP cambió: {current_ip} → {new_ip}")
+                await bot.send(
+                    f"⚠️ <b>Cambio de IP detectado</b>\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"Anterior: <code>{current_ip}</code>\n"
+                    f"Nueva: <code>{new_ip}</code>\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"🔌 Posible reconexión del ISP.\n"
+                    f"WebSockets se reconectarán automáticamente."
+                )
+            current_ip = new_ip
+        except Exception as e:
+            log.error(f"[ip-monitor] Error: {e}")

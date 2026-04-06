@@ -110,6 +110,8 @@ STRATEGY = {
     # ── Concurrent entry throttle (v2) ──
     "concurrent_entry_max": 2,       # max open trades across all symbols per variant within 2h window
     "concurrent_entry_window_h": 2,  # window to count concurrent entries (hours)
+    # ── Zombie Kill (post-abort MFE filter) ──
+    "mfe_zombie_threshold": 0.012,    # 1.2% — si MFE < esto al expirar abort window → cerrar
 }
 
 # ══════════════════════════════════════════════════════════════════

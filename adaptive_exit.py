@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 log = logging.getLogger("adaptive_exit")
 
+FIXED_STOP_LOSS = 0.05  # 5% — nunca cambia, nunca se recalibra
+
 
 # ══════════════════════════════════════════════════════════════════
 #  Data structures
@@ -76,16 +78,16 @@ class AdaptiveExitCalibrator:
 
     # Guardrails: límites duros para evitar parámetros degenerados
     BOUNDS = {
-        "stop_loss_pct":           (0.02, 0.08),    # 2% - 8%
-        "partial_tp_mfe_pct":      (0.008, 0.04),   # 0.8% - 4%
-        "partial_tp_fraction":     (0.25, 0.50),     # 25% - 50%
-        "profit_lock_pct":         (0.003, 0.015),   # 0.3% - 1.5%
-        "breakeven_trigger_pct":   (0.01, 0.04),     # 1% - 4%
-        "trailing_activation_pct": (0.02, 0.08),     # 2% - 8%
-        "trailing_callback_pct":   (0.15, 0.65),     # 15% - 65%
-        "early_abort_hours":       (0.75, 3.0),      # 45min - 3h
-        "early_abort_max_mfe":     (0.003, 0.01),    # 0.3% - 1.0%
-        "early_abort_max_loss":    (-0.03, -0.01),   # -3% a -1%
+        "stop_loss_pct":           (0.02, 0.08),     # 2% - 8% (no importa, SL es FIXED)
+        "partial_tp_mfe_pct":      (0.008, 0.025),   # 0.80% - 2.50%
+        "partial_tp_fraction":     (0.25, 0.50),      # 25% - 50%
+        "profit_lock_pct":         (0.003, 0.015),    # 0.30% - 1.50%
+        "breakeven_trigger_pct":   (0.01, 0.03),      # 1.00% - 3.00%
+        "trailing_activation_pct": (0.015, 0.04),     # 1.50% - 4.00%
+        "trailing_callback_pct":   (0.15, 0.50),      # 15% - 50%
+        "early_abort_hours":       (0.50, 3.0),       # 30min - 3h
+        "early_abort_max_mfe":     (0.003, 0.015),    # 0.30% - 1.50%
+        "early_abort_max_loss":    (-0.03, -0.01),    # -3% a -1%
     }
 
     def __init__(self, base_params: dict):
@@ -101,7 +103,7 @@ class AdaptiveExitCalibrator:
     def _from_static(self, p: dict) -> AdaptiveParams:
         """Construye AdaptiveParams desde la config estática (fallback)."""
         return AdaptiveParams(
-            stop_loss_pct=p.get("stop_loss_pct", 0.035),
+            stop_loss_pct=FIXED_STOP_LOSS,
             partial_tp_mfe_pct=p.get("partial_tp_mfe_pct", 0.015),
             partial_tp_fraction=p.get("partial_tp_fraction", 0.33),
             profit_lock_pct=p.get("profit_lock_pct", 0.005),
@@ -148,7 +150,7 @@ class AdaptiveExitCalibrator:
 
         static = self._from_static(self.base_params)
         blended = AdaptiveParams(
-            stop_loss_pct=self._lerp(static.stop_loss_pct, self.current.stop_loss_pct, alpha),
+            stop_loss_pct=FIXED_STOP_LOSS,
             partial_tp_mfe_pct=self._lerp(static.partial_tp_mfe_pct, self.current.partial_tp_mfe_pct, alpha),
             partial_tp_fraction=self._lerp(static.partial_tp_fraction, self.current.partial_tp_fraction, alpha),
             profit_lock_pct=self._lerp(static.profit_lock_pct, self.current.profit_lock_pct, alpha),
@@ -253,11 +255,18 @@ class AdaptiveExitCalibrator:
         """
         trades = list(self.history)
         trades = self._detect_regime_shift(trades)   # may shrink window
-        winners = [t for t in trades if t.is_winner]
-        losers = [t for t in trades if not t.is_winner]
-        # Exclude aborted trades from SL/trailing calibration to prevent
+
+        # Excluir SL y zombie_kill de calibración: su MAE/MFE está censurada
+        # por el propio mecanismo y contamina percentiles.
+        _exclude = {"stop_loss", "zombie_kill"}
+        n_excluded = sum(1 for t in trades if t.exit_reason in _exclude)
+        calibration_trades = [t for t in trades if t.exit_reason not in _exclude]
+
+        winners = [t for t in calibration_trades if t.is_winner]
+        losers = [t for t in calibration_trades if not t.is_winner]
+        # Exclude aborted trades from trailing calibration to prevent
         # feedback loop: aborted trades have truncated MAE/hold, which would
-        # shrink SL and abort_hours progressively (degeneracy).
+        # shrink abort_hours progressively (degeneracy).
         natural_losers = [t for t in losers if t.exit_reason != "early_abort"]
 
         if len(winners) < 5 or len(losers) < 3:
@@ -282,9 +291,8 @@ class AdaptiveExitCalibrator:
             if t.mfe_pct > 0.001 and t.exit_reason != "profit_lock":
                 w_capture.append(t.etd_pct / t.mfe_pct)
 
-        # ── STOP LOSS ── (uses natural losers to avoid truncated MAE)
-        raw_sl = self._pctl(nl_mae, 75) + 0.005
-        new_sl = self._clamp("stop_loss_pct", raw_sl)
+        # ── STOP LOSS ── (fijo, no se recalibra)
+        new_sl = FIXED_STOP_LOSS
 
         # ── PARTIAL TP MFE ──
         raw_ptp = self._pctl(w_mfe, 25)
@@ -342,14 +350,14 @@ class AdaptiveExitCalibrator:
             early_abort_hours=new_eah,
             early_abort_max_mfe=new_eam,
             early_abort_max_loss=new_eal,
-            calibration_n=len(trades),
+            calibration_n=len(calibration_trades),
             calibration_time=time.time(),
         )
 
         log.warning(
             f"🔧 AEPS RECALIBRADO (#{self._calibration_count}) "
-            f"| N={len(trades)} (W={len(winners)}/L={len(losers)}) | "
-            f"SL: {old.stop_loss_pct:.3f}→{new_sl:.3f} | "
+            f"| SL=FIXED {FIXED_STOP_LOSS:.2%} | Excluded {n_excluded} SL/zombie trades from calibration "
+            f"| N={len(calibration_trades)} (W={len(winners)}/L={len(losers)}) | "
             f"PTP: {old.partial_tp_mfe_pct:.3f}→{new_ptp:.3f} | "
             f"BE: {old.breakeven_trigger_pct:.3f}→{new_be:.3f} | "
             f"TRAIL_ACT: {old.trailing_activation_pct:.3f}→{new_ta:.3f} | "
@@ -379,8 +387,7 @@ class AdaptiveExitCalibrator:
         scale = max(0.5, min(2.0, current_atr_pct / median_atr))
 
         return AdaptiveParams(
-            stop_loss_pct=self._clamp("stop_loss_pct",
-                                      params.stop_loss_pct * scale),
+            stop_loss_pct=FIXED_STOP_LOSS,  # nunca escalar el SL fijo
             partial_tp_mfe_pct=self._clamp("partial_tp_mfe_pct",
                                            params.partial_tp_mfe_pct * scale),
             partial_tp_fraction=params.partial_tp_fraction,
@@ -459,6 +466,13 @@ class AdaptiveExitCalibrator:
         p = data.get("current_params", {})
         if p:
             cal.current = AdaptiveParams(**p)
+            cal.current.stop_loss_pct = FIXED_STOP_LOSS  # siempre fijo
+            # Re-aplicar guardrails actuales a params restaurados del disco
+            for param_name in cal.BOUNDS:
+                if hasattr(cal.current, param_name) and param_name != "stop_loss_pct":
+                    val = getattr(cal.current, param_name)
+                    clamped = cal._clamp(param_name, val)
+                    setattr(cal.current, param_name, clamped)
         return cal
 
     # ──────────────────────────────────────────────────────────
