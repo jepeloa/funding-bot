@@ -195,7 +195,7 @@
 
   <!-- Trade Table -->
   <div style="margin-bottom: 24px;">
-    <div class="section-title"><span>📋</span> Trade Log</div>
+    <div class="section-title" style="justify-content:space-between;"><div style="display:flex;align-items:center;gap:8px;"><span>📋</span> Trade Log</div><button id="btnDownloadPaths" title="Download trade paths JSON" style="background:var(--blue);color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer">⬇ Paths JSON</button></div>
     <div class="variant-tabs" id="table-tabs"></div>
     <div class="card" style="overflow-x: auto; max-height: 600px; overflow-y: auto;">
       <table>
@@ -1262,6 +1262,32 @@ function startAutoRefresh() {
     if (document.getElementById('autoRefresh').checked) { loadData(); loadBinanceInfo(); loadExitSignals(); }
   }, 30000);
 }
+
+// ── Download trade paths ──
+document.getElementById('btnDownloadPaths').addEventListener('click', async () => {
+  const btn = document.getElementById('btnDownloadPaths');
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading…';
+  try {
+    const variant = document.getElementById('variantSelect').value || currentActiveVariant;
+    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(variant) + '&version=v2,v3,v4&limit=500', { headers });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const json = await r.json();
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'trade_paths_' + variant + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Failed to download paths:', e);
+    alert('Error downloading paths: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ Paths JSON';
+  }
+});
 
 window.addEventListener('load', async () => { await loadBinanceAccounts(); loadData(); startAutoRefresh(); });
 window.addEventListener('resize', () => {

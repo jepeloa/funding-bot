@@ -181,7 +181,10 @@
 
   <!-- Trade table -->
   <div class="card">
-    <div class="card-header"><span class="icon">📋</span> Historial de Trades (<span id="tableCount">0</span>)</div>
+    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+      <span><span class="icon">📋</span> Historial de Trades (<span id="tableCount">0</span>)</span>
+      <button id="btnDownloadPaths" title="Download trade paths JSON" style="background:var(--blue);color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer">⬇ Paths JSON</button>
+    </div>
     <div class="card-body" style="padding:0">
       <div class="table-scroll">
         <table class="trade-table" id="tradeTable">
@@ -223,6 +226,31 @@ document.querySelectorAll('.vtab').forEach(btn => {
     currentVariant = btn.dataset.v;
     loadData();
   });
+});
+
+// ── Download trade paths ──
+document.getElementById('btnDownloadPaths').addEventListener('click', async () => {
+  const btn = document.getElementById('btnDownloadPaths');
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading…';
+  try {
+    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(currentVariant) + '&version=v2,v3,v4&limit=500', { headers });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const json = await r.json();
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'trade_paths_' + currentVariant + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Failed to download paths:', e);
+    alert('Error downloading paths: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ Paths JSON';
+  }
 });
 
 // ── Fetch ──

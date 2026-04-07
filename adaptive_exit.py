@@ -285,11 +285,27 @@ class AdaptiveExitCalibrator:
         # Use natural losers for time_to_mfe (aborted ttm is truncated)
         l_ttm = sorted(t.time_to_mfe_secs for t in natural_losers if t.time_to_mfe_secs > 0)
 
-        # Capture ratios de winners (ETD/MFE)
-        w_capture = []
-        for t in winners:
-            if t.mfe_pct > 0.001 and t.exit_reason != "profit_lock":
-                w_capture.append(t.etd_pct / t.mfe_pct)
+        # Capture ratios de winners para trailing callback.
+        # SOLO usar trades cerrados por pump_capture (señal externa, no trailing).
+        # Esto rompe el feedback loop: pump_capture exits no dependen del
+        # trailing callback, así que su ETD/MFE refleja el retroceso natural.
+        # Fallback a non-trailing winners si no hay suficientes pump_captures.
+        pump_capture_winners = [
+            t for t in winners
+            if t.exit_reason == "pump_capture" and t.mfe_pct > 0.001
+        ]
+        non_trailing_winners = [
+            t for t in winners
+            if t.exit_reason not in ("trailing_stop", "profit_lock")
+            and t.mfe_pct > 0.001
+        ]
+
+        if len(pump_capture_winners) >= 3:
+            w_capture = [t.etd_pct / t.mfe_pct for t in pump_capture_winners]
+        elif len(non_trailing_winners) >= 3:
+            w_capture = [t.etd_pct / t.mfe_pct for t in non_trailing_winners]
+        else:
+            w_capture = []
 
         # ── STOP LOSS ── (fijo, no se recalibra)
         new_sl = FIXED_STOP_LOSS

@@ -78,8 +78,8 @@ async def lifespan(app: FastAPI):
     pool = await asyncpg.create_pool(
         host=DB_HOST, port=DB_PORT, database=DB_NAME,
         user=DB_USER, password=DB_PASSWORD,
-        min_size=2, max_size=10,
-        command_timeout=60,
+        min_size=2, max_size=15,
+        command_timeout=120,
     )
     yield
     await pool.close()
@@ -1592,6 +1592,153 @@ async def aeps_data(
         "min_trades": AdaptiveExitCalibrator.MIN_TRADES_TO_CALIBRATE,
         "window_size": AdaptiveExitCalibrator.WINDOW_SIZE,
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+#  TRADE PATH RECONSTRUCTION (uses ohlcv_1m continuous aggregate)
+# ══════════════════════════════════════════════════════════════════
+
+
+def _build_path_from_candles(entry_price: float, entry_ts: float,
+                              exit_ts: float, candles: list) -> list:
+    """Build [secs, pnl, mfe, mae] path from 1-minute OHLCV candles.
+
+    Each candle expands into up to 4 price points (O, H, L, C) to capture
+    the intra-candle extremes for accurate MFE/MAE tracking.
+    """
+    if not candles:
+        return []
+
+    # Expand candles into (offset_secs, price) samples
+    samples: list[tuple[int, float]] = []
+    for c in candles:
+        bucket_ts = c[0].timestamp() if hasattr(c[0], "timestamp") else float(c[0])
+        base_sec = int(bucket_ts - entry_ts)
+        o, h, l, close = float(c[1]), float(c[2]), float(c[3]), float(c[4])
+        samples.append((max(base_sec, 0), o))
+        # Order H/L by which is more adverse for short
+        pnl_h = (entry_price - h) / entry_price
+        pnl_l = (entry_price - l) / entry_price
+        if pnl_l < pnl_h:  # L is more adverse for short
+            samples.append((base_sec + 20, l))
+            samples.append((base_sec + 40, h))
+        else:
+            samples.append((base_sec + 20, h))
+            samples.append((base_sec + 40, l))
+        samples.append((base_sec + 59, close))
+
+    samples.sort(key=lambda x: x[0])
+
+    # Build path with adaptive downsampling:
+    # Keep every point for first 300s, then ~60s intervals after
+    path = []
+    mfe = 0.0
+    mae = 0.0
+    last_emit_sec = -999
+    duration = int(exit_ts - entry_ts)
+
+    for sec, price in samples:
+        if sec < 0 or sec > duration + 60:
+            continue
+        pnl = (entry_price - price) / entry_price  # short
+        if pnl > mfe:
+            mfe = pnl
+        if pnl < mae:
+            mae = pnl
+        # Adaptive: full detail first 300s, ~60s after
+        if sec <= 300 or (sec - last_emit_sec) >= 60 or sec >= duration - 60:
+            path.append([sec, round(pnl, 6), round(mfe, 6), round(mae, 6)])
+            last_emit_sec = sec
+
+    return path
+
+
+@app.get("/vtrades/paths", dependencies=[Depends(verify_api_key)])
+async def vtrades_paths(
+    variant: Optional[str] = Query(None),
+    symbol: Optional[str] = Query(None),
+    version: Optional[str] = Query(None, description="Comma-separated strategy versions, e.g. v2,v3,v4"),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Closed trades with reconstructed price path from ohlcv_1m aggregate."""
+    clauses = ["status = 'closed'"]
+    params = []
+    idx = 1
+    if variant:
+        clauses.append(f"variant = ${idx}")
+        params.append(variant)
+        idx += 1
+    if symbol:
+        clauses.append(f"symbol = ${idx}")
+        params.append(symbol.upper())
+        idx += 1
+    if version:
+        versions = [v.strip() for v in version.split(",") if v.strip()]
+        placeholders = ", ".join(f"${idx + i}" for i in range(len(versions)))
+        clauses.append(f"strategy_version IN ({placeholders})")
+        params.extend(versions)
+        idx += len(versions)
+    where = "WHERE " + " AND ".join(clauses)
+    sql = (
+        f"SELECT id, symbol, variant, entry_price, entry_time, exit_time, "
+        f"exit_reason, pnl_pct, mfe_pct, mae_pct, hold_hours, etd_pct, leverage, "
+        f"strategy_version "
+        f"FROM virtual_trades {where} "
+        f"ORDER BY exit_time DESC LIMIT ${idx}"
+    )
+    params.append(_clamp_limit(limit))
+
+    import asyncio
+
+    async with pool.acquire() as conn:
+        trades = await conn.fetch(sql, *params)
+        if not trades:
+            return []
+
+        trade_list = []
+        for t in trades:
+            trade_list.append((t, float(t["entry_time"]), float(t["exit_time"])))
+
+    # ── Fetch candles per-trade with bounded concurrency ──
+    sem = asyncio.Semaphore(8)
+
+    async def _fetch_one(t, entry_ts, exit_ts):
+        entry_price = float(t["entry_price"])
+        async with sem:
+            async with pool.acquire() as c:
+                rows = await c.fetch(
+                    "SELECT bucket, open, high, low, close FROM ohlcv_1m "
+                    "WHERE symbol = $1 "
+                    "AND bucket >= to_timestamp($2) - interval '1 minute' "
+                    "AND bucket <= to_timestamp($3) + interval '1 minute' "
+                    "ORDER BY bucket",
+                    t["symbol"], entry_ts, exit_ts,
+                )
+        candles = [(r["bucket"], r["open"], r["high"], r["low"], r["close"])
+                   for r in rows]
+        path = _build_path_from_candles(entry_price, entry_ts, exit_ts, candles)
+        return {
+            "trade_id": t["id"],
+            "symbol": t["symbol"],
+            "variant": t["variant"],
+            "strategy_version": t["strategy_version"],
+            "entry_price": entry_price,
+            "entry_time": entry_ts,
+            "exit_time": exit_ts,
+            "exit_reason": t["exit_reason"],
+            "pnl_pct": float(t["pnl_pct"] or 0),
+            "mfe_pct": float(t["mfe_pct"] or 0),
+            "mae_pct": float(t["mae_pct"] or 0),
+            "hold_hours": float(t["hold_hours"] or 0),
+            "etd_pct": float(t["etd_pct"] or 0),
+            "leverage": int(t["leverage"] or 1),
+            "path": path,
+        }
+
+    results = await asyncio.gather(
+        *[_fetch_one(t, ets, xts) for t, ets, xts in trade_list]
+    )
+    return list(results)
 
 
 # ══════════════════════════════════════════════════════════════════
