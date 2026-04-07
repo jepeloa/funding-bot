@@ -357,7 +357,7 @@ class AsyncDBWriter:
                 data.get("position_size"),
                 json.dumps(data.get("entry_snapshot", {})),
                 "open",
-                STRATEGY_VERSION,
+                data.get("strategy_version", STRATEGY_VERSION),
                 data.get("trading_mode", "paper"),
             )
         return trade_id

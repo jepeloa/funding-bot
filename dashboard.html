@@ -112,7 +112,7 @@
 <body>
 
 <div class="header">
-  <h1>🔧 <span>AEPS</span> Calibrator</h1>
+  <h1>🔧 <span id="dashTitle">AEPS</span> Calibrator</h1>
   <div class="variant-tabs" id="variantTabs">
     <button class="vtab active" data-v="base">base</button>
     <button class="vtab" data-v="conservative">conservative</button>
@@ -224,6 +224,7 @@ document.querySelectorAll('.vtab').forEach(btn => {
     document.querySelectorAll('.vtab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentVariant = btn.dataset.v;
+    document.getElementById('dashTitle').textContent = currentVariant === 'aggressive' ? 'Shannon-VOI' : 'AEPS';
     loadData();
   });
 });
@@ -254,14 +255,25 @@ document.getElementById('btnDownloadPaths').addEventListener('click', async () =
 });
 
 // ── Fetch ──
+let shannonData = null;
+
 async function loadData() {
   try {
-    const r = await fetch('/aeps?variant=' + encodeURIComponent(currentVariant), { headers });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    data = await r.json();
-    render();
+    if (currentVariant === 'aggressive') {
+      const r = await fetch('/shannon', { headers });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      shannonData = await r.json();
+      data = null;
+      renderShannon();
+    } else {
+      const r = await fetch('/aeps?variant=' + encodeURIComponent(currentVariant), { headers });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      data = await r.json();
+      shannonData = null;
+      render();
+    }
   } catch (e) {
-    console.error('Failed to load AEPS data:', e);
+    console.error('Failed to load data:', e);
   }
 }
 
@@ -660,6 +672,168 @@ document.querySelectorAll('.trade-table th').forEach(th => {
     renderTable();
   });
 });
+
+// ═══════════════════════════════════════════════
+//  Shannon-VOI rendering (aggressive variant)
+// ═══════════════════════════════════════════════
+
+function renderShannon() {
+  if (!shannonData) return;
+  const s = shannonData.stats;
+  const cfg = shannonData.config;
+
+  // KPIs — reuse existing elements with Shannon-relevant data
+  setText('kN', s.total);
+  setText('kWL', s.winners + 'W / ' + s.losers + 'L');
+  const wrEl = document.getElementById('kWR');
+  wrEl.textContent = (s.win_rate * 100).toFixed(1) + '%';
+  wrEl.className = 'val ' + (s.win_rate >= 0.5 ? 'green' : 'red');
+
+  setText('kCal', shannonData.surface_cells + ' cells');
+  setText('kCalSub', 'P(win) surface');
+  setText('kSL', (cfg.hard_sl * 100).toFixed(0) + '%');
+  setText('kSLb', 'hard stop');
+  setText('kPTP', (cfg.exit_pw * 100).toFixed(0) + '%');
+  setText('kPTPb', 'exit P(win) < ' + (cfg.exit_pw * 100).toFixed(0) + '%');
+  setText('kCB', (cfg.trailing_callback * 100).toFixed(0) + '%');
+  setText('kCBb', 'trail cb after P(win) > ' + (cfg.trail_pw * 100).toFixed(0) + '%');
+  setText('kEA', (s.cum_pnl_pct * 100).toFixed(2) + '%');
+  setText('kEAb', 'cumulative PnL');
+  setText('kAlpha', 'Shannon');
+  setText('kAlphaSub', 'VOI exit');
+  setText('calMeta', 'shannon · ' + s.total + ' trades · aggressive');
+
+  // Clear AEPS-specific charts
+  destroyChart('chartSL');
+  destroyChart('chartPTP');
+  destroyChart('chartTrail');
+  destroyChart('chartAbort');
+
+  // Render exit reason distribution in chartSL canvas
+  if (s.by_reason && Object.keys(s.by_reason).length > 0) {
+    const ctx = document.getElementById('chartSL').getContext('2d');
+    const reasons = Object.entries(s.by_reason);
+    const labels = reasons.map(r => r[0]);
+    const counts = reasons.map(r => r[1].count);
+    const colors = labels.map(l => {
+      if (l.includes('trail')) return 'rgba(63,185,80,.8)';
+      if (l.includes('take_profit') || l.includes('pump')) return 'rgba(88,166,255,.8)';
+      if (l.includes('stop') || l.includes('sl')) return 'rgba(248,81,73,.8)';
+      return 'rgba(210,153,34,.8)';
+    });
+    charts['chartSL'] = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderRadius: 3 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'Exit Reasons', color: '#c9d1d9', font: { size: 13, weight: '600' } }, legend: { display: false } },
+        scales: { x: { grid: { display: false } }, y: { grid: { color: 'rgba(48,54,61,.5)' } } },
+      },
+    });
+  }
+
+  // P(win) final distribution in chartPTP
+  if (shannonData.trades.length > 0) {
+    const ctx2 = document.getElementById('chartPTP').getContext('2d');
+    const pwValues = shannonData.trades.map(t => (t.final_pw || 0) * 100);
+    // Histogram (buckets of 10%)
+    const buckets = Array(10).fill(0);
+    pwValues.forEach(v => { const i = Math.min(Math.floor(v / 10), 9); buckets[i]++; });
+    const bucketLabels = Array.from({length: 10}, (_, i) => (i*10) + '-' + ((i+1)*10) + '%');
+    charts['chartPTP'] = new Chart(ctx2, {
+      type: 'bar',
+      data: { labels: bucketLabels, datasets: [{ data: buckets, backgroundColor: 'rgba(88,166,255,.6)', borderRadius: 3 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'Final P(win) Distribution', color: '#c9d1d9', font: { size: 13, weight: '600' } }, legend: { display: false } },
+        scales: { x: { grid: { display: false } }, y: { grid: { color: 'rgba(48,54,61,.5)' } } },
+      },
+    });
+  }
+
+  // Win Rate evolution in chartWR (reuse scatter area)
+  destroyChart('chartScatter');
+  destroyChart('chartWR');
+  if (shannonData.win_rate_series.length > 0) {
+    const ctx3 = document.getElementById('chartWR').getContext('2d');
+    const wr = shannonData.win_rate_series;
+    charts['chartWR'] = new Chart(ctx3, {
+      type: 'line',
+      data: {
+        labels: wr.map(w => w.trade_idx),
+        datasets: [{
+          label: 'Win Rate %',
+          data: wr.map(w => w.win_rate * 100),
+          borderColor: '#58a6ff', borderWidth: 2, pointRadius: 2, fill: false,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'Win Rate Evolution', color: '#c9d1d9', font: { size: 13, weight: '600' } }, legend: { display: false } },
+        scales: { x: { grid: { display: false } }, y: { min: 0, max: 100, grid: { color: 'rgba(48,54,61,.5)' } } },
+      },
+    });
+  }
+
+  // PnL chart (reuse chartPnL)
+  destroyChart('chartPnL');
+  if (shannonData.pnl_series.length > 0) {
+    const ctx4 = document.getElementById('chartPnL').getContext('2d');
+    const ps = shannonData.pnl_series;
+    const colors = ps.map(p => p.pnl_pct >= 0 ? 'rgba(63,185,80,.8)' : 'rgba(248,81,73,.8)');
+    charts['chartPnL'] = new Chart(ctx4, {
+      type: 'bar',
+      data: {
+        labels: ps.map(p => p.trade_idx),
+        datasets: [
+          { label: 'Trade PnL%', data: ps.map(p => p.pnl_pct * 100), backgroundColor: colors, borderRadius: 2, yAxisID: 'y', order: 2 },
+          { label: 'Cumulative PnL%', data: ps.map(p => p.cum_pnl_pct * 100), type: 'line', borderColor: '#58a6ff', borderWidth: 2, pointRadius: 2, fill: false, yAxisID: 'y1', order: 1 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'Shannon PnL por Trade y Acumulado (%)', color: '#c9d1d9', font: { size: 13, weight: '600' } }, legend: { labels: { boxWidth: 10, padding: 8 } } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { position: 'left', title: { display: true, text: 'Trade PnL%' }, grid: { color: 'rgba(48,54,61,.5)' } },
+          y1: { position: 'right', title: { display: true, text: 'Cum. PnL%' }, grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  // Trade table
+  const trades = shannonData.trades || [];
+  setText('tableCount', trades.length);
+  const tbody = document.getElementById('tradeBody');
+  const rows = trades.map((t, i) => ({
+    idx: i + 1,
+    wl: t.is_winner,
+    exit: t.reason || '',
+    pnl: t.pnl_pct * 100,
+    hold: (t.elapsed_sec || 0) / 3600,
+    pw: (t.final_pw || 0) * 100,
+    trail: t.trailing_used ? 'Y' : 'N',
+    symbol: t.symbol || '',
+  }));
+  tbody.innerHTML = rows.map(r =>
+    '<tr>' +
+    '<td>' + r.idx + '</td>' +
+    '<td><span class="badge ' + (r.wl ? 'win' : 'loss') + '">' + (r.wl ? 'W' : 'L') + '</span></td>' +
+    '<td>' + r.exit + '</td>' +
+    '<td class="' + (r.pnl >= 0 ? 'w' : 'l') + '">' + (r.pnl >= 0 ? '+' : '') + r.pnl.toFixed(2) + '%</td>' +
+    '<td>' + r.symbol + '</td>' +
+    '<td>' + r.pw.toFixed(1) + '%</td>' +
+    '<td>' + r.hold.toFixed(1) + '</td>' +
+    '<td>' + r.trail + '</td>' +
+    '<td>—</td>' +
+    '<td><span class="badge cal">SHN</span></td>' +
+    '</tr>'
+  ).join('');
+
+  // Hide param bars for Shannon
+  document.getElementById('paramBars').innerHTML = '<div style="color:#8b949e;padding:20px;text-align:center">Shannon-VOI uses P(win) surface instead of AEPS parameter bars</div>';
+}
 
 // ── Init + auto-refresh ──
 loadData();

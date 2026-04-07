@@ -1594,6 +1594,102 @@ async def aeps_data(
     }
 
 
+@app.get("/shannon", dependencies=[Depends(verify_api_key)])
+async def shannon_data():
+    """
+    Returns Shannon-VOI exit status for the aggressive variant.
+    Reads from logs/shannon/trades.jsonl + data/pwin_surface.json.
+    """
+    import json as _json_sh
+
+    base_dir = os.path.dirname(__file__)
+    trades_path = os.path.join(base_dir, "logs", "shannon", "trades.jsonl")
+    surface_path = os.path.join(base_dir, "data", "pwin_surface.json")
+
+    # Load trade history
+    trades = []
+    if os.path.exists(trades_path):
+        with open(trades_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    trades.append(_json_sh.loads(line))
+
+    # Load surface metadata
+    surface_cells = 0
+    if os.path.exists(surface_path):
+        with open(surface_path) as f:
+            surface = _json_sh.load(f)
+            surface_cells = len(surface)
+
+    # Compute stats
+    winners = [t for t in trades if t.get("is_winner")]
+    losers = [t for t in trades if not t.get("is_winner")]
+    cum_pnl = sum(t.get("pnl_pct", 0) for t in trades)
+
+    by_reason = {}
+    for t in trades:
+        r = t.get("reason", "unknown")
+        if r not in by_reason:
+            by_reason[r] = {"count": 0, "wins": 0, "pnl": 0.0}
+        by_reason[r]["count"] += 1
+        if t.get("is_winner"):
+            by_reason[r]["wins"] += 1
+        by_reason[r]["pnl"] += t.get("pnl_pct", 0)
+
+    # Win rate evolution
+    wins = losses = 0
+    wr_series = []
+    for i, t in enumerate(trades):
+        if t.get("is_winner"):
+            wins += 1
+        else:
+            losses += 1
+        wr_series.append({"trade_idx": i + 1, "win_rate": wins / (wins + losses)})
+
+    # PnL series
+    pnl_series = []
+    running = 0.0
+    for i, t in enumerate(trades):
+        running += t.get("pnl_pct", 0)
+        pnl_series.append({
+            "trade_idx": i + 1,
+            "pnl_pct": t.get("pnl_pct", 0),
+            "cum_pnl_pct": running,
+            "reason": t.get("reason", ""),
+            "symbol": t.get("symbol", ""),
+            "elapsed_min": t.get("elapsed_sec", 0) / 60,
+            "final_pw": t.get("final_pw", 0),
+        })
+
+    return {
+        "type": "shannon",
+        "surface_cells": surface_cells,
+        "config": {
+            "prior_win": 0.566,
+            "exit_pw": 0.50,
+            "trail_pw": 0.70,
+            "hard_sl": 0.08,
+            "trailing_callback": 0.30,
+        },
+        "stats": {
+            "total": len(trades),
+            "winners": len(winners),
+            "losers": len(losers),
+            "win_rate": len(winners) / len(trades) if trades else 0,
+            "cum_pnl_pct": cum_pnl,
+            "avg_pnl_w": (sum(t["pnl_pct"] for t in winners) / len(winners))
+                         if winners else 0,
+            "avg_pnl_l": (sum(t["pnl_pct"] for t in losers) / len(losers))
+                         if losers else 0,
+            "by_reason": by_reason,
+        },
+        "trades": trades,
+        "win_rate_series": wr_series,
+        "pnl_series": pnl_series,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════
 #  TRADE PATH RECONSTRUCTION (uses ohlcv_1m continuous aggregate)
 # ══════════════════════════════════════════════════════════════════
