@@ -252,7 +252,7 @@ let trades = [];
 let activeEquityVariant = 'all';
 let activeTableVariant = 'all';
 let activeMode = 'all';
-let activeVersions = new Set(['v2', 'v3', 'v4']);
+let activeVersions = new Set(['v2', 'v3', 'v4', 'shannon']);
 let refreshTimer = null;
 let binanceAccounts = [];
 
@@ -263,7 +263,7 @@ function getFilteredTrades() {
 }
 
 function getActiveVariants() {
-  if (activeMode === 'live') return [currentActiveVariant];
+  if (activeMode === 'live') return ['base', 'aggressive'];
   return variants;
 }
 
