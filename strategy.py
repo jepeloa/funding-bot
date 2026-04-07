@@ -894,6 +894,10 @@ class StrategyEngine:
                               vname: str, vparams: dict, now: float):
         """Evalúa condiciones de entrada SHORT para una variante específica."""
 
+        # Aggressive mirrors base entries (Shannon-VOI)
+        if vname == "aggressive":
+            return
+
         # ── Cooldown ──
         cooldown_secs = vparams["cooldown_hours"] * 3600
         if now - vtrade.last_trade_close_time < cooldown_secs:
@@ -1128,6 +1132,22 @@ class StrategyEngine:
                 )
             except Exception:
                 pass
+
+        # ── Aggressive mirrors base: open aggressive when base opens ──
+        if vname == "base":
+            agg_vtrade = self.variant_trades["aggressive"].get(state.symbol)
+            agg_params = VARIANTS["aggressive"]
+            if agg_vtrade is not None and agg_vtrade.open_trade_id is None:
+                cooldown = agg_params["cooldown_hours"] * 3600
+                if now - agg_vtrade.last_trade_close_time >= cooldown:
+                    entry_mode = ("live" if (self.trading_mode == "live"
+                                             and self.trader is not None
+                                             and "aggressive" == self.active_variant)
+                                  else "paper")
+                    if not self.halted[entry_mode]["aggressive"]:
+                        await self._open_trade(
+                            state, agg_vtrade, "aggressive", agg_params, now
+                        )
 
         # Grabar snapshot de entrada
         await self.writer.insert_snapshot(snapshot)
