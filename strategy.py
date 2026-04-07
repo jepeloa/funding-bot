@@ -1282,6 +1282,23 @@ class StrategyEngine:
 
         pnl_pct = (entry - price) / entry
         hold_hours = (now - vtrade.entry_time) / 3600.0
+
+        # Update MFE / MAE (aggressive skips the AEPS path that does this)
+        if pnl_pct > vtrade.mfe:
+            vtrade.mfe = pnl_pct
+            vtrade.mfe_timestamp = now
+        if pnl_pct < vtrade.mae:
+            vtrade.mae = pnl_pct
+
+        # Funding collection
+        funding_interval = state.funding_interval_secs
+        if now - vtrade.last_funding_collection >= funding_interval:
+            if state.funding_rate > 0 and vtrade.entry_notional > 0:
+                current_notional = vtrade.entry_notional * state.mark_price / vtrade.entry_price if vtrade.entry_price > 0 else vtrade.entry_notional
+                funding_payment = state.funding_rate * current_notional
+                vtrade.funding_collected += funding_payment
+            vtrade.last_funding_collection = now
+
         mfe_pct = vtrade.mfe
         mae_pct = vtrade.mae
 
