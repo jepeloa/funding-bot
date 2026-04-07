@@ -184,7 +184,7 @@ VARIANTS = {
         "entry_funding_score_min": 0.5, # v2: c_fund ≥ 0.5 (hard filter — no funding = no spring)
         "capital_fraction": 0.05,       # base fraction (scaled by score in v2)
         "capital_fraction_high": 0.075, # v2: 7.5% for score ≥ 4.5
-        "leverage": 7,
+        "leverage": 5,                  # same as base (mirrors base entries)
         "stop_loss_pct": 0.05,          # v2: was 7% — losers avg MAE=-6.2%, winners -1.9%
         "take_profit_pct": 0.20,        # 20%
         "max_hold_hours": 72,           # 72h
