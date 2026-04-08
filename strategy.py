@@ -38,7 +38,7 @@ from config import (
     load_trading_config,
 )
 from adaptive_exit import AdaptiveExitCalibrator, TradeRecord
-from shannon_exit import ShannonExit
+from shannon_exit import V5Exit
 
 log = logging.getLogger("strategy")
 
@@ -693,16 +693,16 @@ class StrategyEngine:
             f"capital=${INITIAL_CAPITAL:,.0f}/variante"
         )
 
-        # AEPS: un calibrador por variante (aggressive usa Shannon, no AEPS)
+        # AEPS: un calibrador por variante (aggressive usa v5, no AEPS)
         self.exit_calibrators: dict[str, AdaptiveExitCalibrator] = {}
         for vname, vparams in VARIANTS.items():
             if vname == "aggressive":
                 continue
             self.exit_calibrators[vname] = AdaptiveExitCalibrator(vparams)
 
-        # Shannon-VOI exit para aggressive
+        # v5 exit para aggressive
         surface_path = os.path.join(os.path.dirname(__file__), "data", "pwin_surface.json")
-        shannon_config = {
+        v5_config = {
             "prior_win": 0.566,
             "exit_pw": 0.50,
             "trail_pw": 0.70,
@@ -710,9 +710,9 @@ class StrategyEngine:
             "min_observe_sec": 60,
             "hard_sl": 0.08,
             "trailing_callback": 0.30,
-            "output_dir": os.path.join(os.path.dirname(__file__), "logs", "shannon"),
+            "output_dir": os.path.join(os.path.dirname(__file__), "logs", "v5"),
         }
-        self.shannon_exit = ShannonExit(surface_path, shannon_config)
+        self.v5_exit = V5Exit(surface_path, v5_config)
 
     def get_state(self, symbol: str) -> SymbolState:
         sym = symbol.upper()
@@ -894,7 +894,7 @@ class StrategyEngine:
                               vname: str, vparams: dict, now: float):
         """Evalúa condiciones de entrada SHORT para una variante específica."""
 
-        # Aggressive mirrors base entries (Shannon-VOI)
+        # Aggressive mirrors base entries (v5)
         if vname == "aggressive":
             return
 
@@ -1083,7 +1083,7 @@ class StrategyEngine:
             "trading_mode": trade_mode,
         }
         if vname == "aggressive":
-            trade_data["strategy_version"] = "shannon"
+            trade_data["strategy_version"] = "v5"
 
         trade_id = await self.writer.open_virtual_trade(trade_data)
 
@@ -1104,9 +1104,9 @@ class StrategyEngine:
         vtrade.original_qty = actual_qty
         vtrade.zombie_checked = False
 
-        # Shannon: register trade opening for aggressive variant
+        # v5: register trade opening for aggressive variant
         if vname == "aggressive":
-            self.shannon_exit.open(
+            self.v5_exit.open(
                 str(trade_id), state.symbol, now, actual_entry_price
             )
 
@@ -1162,11 +1162,14 @@ class StrategyEngine:
         """Evalúa condiciones de salida para un trade abierto.
         Usa parámetros adaptativos (AEPS) para todos los thresholds de salida.
         Los parámetros de ENTRADA siguen usando vparams[].
-        Aggressive variante usa Shannon-VOI en vez de AEPS.
+        Aggressive variante usa v5 en vez de AEPS.
         """
-        # Aggressive → Shannon exit path
+        # Aggressive → v5 exit path (isolated to not crash base exits)
         if vname == "aggressive":
-            await self._evaluate_exit_shannon(state, vtrade, vparams, now)
+            try:
+                await self._evaluate_exit_v5(state, vtrade, vparams, now)
+            except Exception as e:
+                log.error(f"v5 exit error [{state.symbol}]: {e}", exc_info=True)
             return
 
         price = state.mark_price
@@ -1289,10 +1292,10 @@ class StrategyEngine:
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
 
-    async def _evaluate_exit_shannon(self, state: SymbolState,
-                                     vtrade: VariantTradeState,
-                                     vparams: dict, now: float):
-        """Shannon-VOI exit evaluation for aggressive variant."""
+    async def _evaluate_exit_v5(self, state: SymbolState,
+                                vtrade: VariantTradeState,
+                                vparams: dict, now: float):
+        """v5 exit evaluation for aggressive variant."""
         price = state.mark_price
         entry = vtrade.entry_price
         vname = "aggressive"
@@ -1322,25 +1325,25 @@ class StrategyEngine:
         mfe_pct = vtrade.mfe
         mae_pct = vtrade.mae
 
-        # Shannon tick
+        # v5 tick
         trade_id_str = str(vtrade.open_trade_id)
-        action = self.shannon_exit.tick(
+        action = self.v5_exit.tick(
             trade_id_str, now, pnl_pct, mfe_pct, mae_pct
         )
 
         exit_reason = None
 
-        # Shannon decision → exit
+        # v5 decision → exit
         if action == "EXIT":
-            if pnl_pct <= -self.shannon_exit.hard_sl:
+            if pnl_pct <= -self.v5_exit.hard_sl:
                 exit_reason = "stop_loss"
-            elif self.shannon_exit.trades.get(trade_id_str) and \
-                 self.shannon_exit.trades[trade_id_str].trailing_active:
+            elif self.v5_exit.trades.get(trade_id_str) and \
+                 self.v5_exit.trades[trade_id_str].trailing_active:
                 exit_reason = "trailing_stop"
             else:
-                exit_reason = "shannon_exit"
+                exit_reason = "v5_exit"
 
-        # Static safety nets (override Shannon HOLD)
+        # Static safety nets (override v5 HOLD)
         # ── Take Profit 20% ──
         if not exit_reason and pnl_pct >= vparams["take_profit_pct"]:
             exit_reason = "take_profit"
@@ -1362,23 +1365,29 @@ class StrategyEngine:
             exit_reason = "pump_capture"
 
         if exit_reason:
-            # Close Shannon state first
-            self.shannon_exit.close(trade_id_str, pnl_pct, exit_reason)
+            # Close v5 state first
+            self.v5_exit.close(trade_id_str, pnl_pct, exit_reason)
 
             # Close the actual trade
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
 
-            # Rebuild surface from all closed aggressive (shannon) trades
+            # Rebuild surface from all closed aggressive (v5) trades
             try:
-                await self._rebuild_shannon_surface()
+                await self._rebuild_v5_surface()
             except Exception as e:
-                log.warning(f"Shannon surface rebuild failed: {e}")
+                log.warning(f"v5 surface rebuild failed: {e}")
 
-    async def _rebuild_shannon_surface(self):
-        """Rebuild P(win) surface after an aggressive trade closes."""
+    async def _rebuild_v5_surface(self):
+        """Rebuild P(win) surface after an aggressive trade closes.
+
+        Uses aggressive's own trades once it has >= 30 closed trades,
+        otherwise bootstraps from base variant trades.
+        """
         import asyncpg
         from scripts.bootstrap_surface_from_db import build_surface_from_trades
+
+        MIN_SELF_TRADES = 30  # minimum aggressive trades before self-calibration
 
         pool = await asyncpg.create_pool(
             host='localhost', port=5432, database='binance_futures',
@@ -1386,16 +1395,31 @@ class StrategyEngine:
             min_size=1, max_size=2,
         )
         try:
+            # Check how many aggressive trades we have
+            async with pool.acquire() as conn:
+                agg_count = await conn.fetchval("""
+                    SELECT count(*)
+                    FROM virtual_trades
+                    WHERE variant = 'aggressive'
+                      AND status = 'closed'
+                      AND exit_time IS NOT NULL
+                """)
+
+            # Pick source: aggressive if enough trades, else bootstrap from base
+            if agg_count >= MIN_SELF_TRADES:
+                source_variant = 'aggressive'
+            else:
+                source_variant = 'base'
+
             async with pool.acquire() as conn:
                 trades = await conn.fetch("""
                     SELECT id, symbol, entry_price, entry_time, exit_time,
                            pnl_pct
                     FROM virtual_trades
-                    WHERE variant = 'base'
+                    WHERE variant = $1
                       AND status = 'closed'
-                      AND trading_mode = 'paper'
                       AND exit_time IS NOT NULL
-                """)
+                """, source_variant)
             if not trades:
                 return
 
@@ -1431,10 +1455,11 @@ class StrategyEngine:
                 _json.dump(surface, f)
             os.replace(tmp, surface_path)
 
-            self.shannon_exit.reload_surface()
+            self.v5_exit.reload_surface()
             log.info(
-                f"Shannon surface rebuilt: {len(surface)} cells "
-                f"from {len(trades)} base trades"
+                f"v5 surface rebuilt: {len(surface)} cells "
+                f"from {len(trades)} {source_variant} trades"
+                f"{'' if source_variant == 'aggressive' else ' (bootstrap)'}"
             )
         finally:
             await pool.close()
@@ -1617,7 +1642,7 @@ class StrategyEngine:
 
         await self.writer.close_virtual_trade(trade_id, exit_data)
 
-        # ── AEPS: registrar trade en calibrador (skip aggressive — uses Shannon) ──
+        # ── AEPS: registrar trade en calibrador (skip aggressive — uses v5) ──
         if vname in self.exit_calibrators:
             try:
                 record = TradeRecord(
@@ -1901,7 +1926,7 @@ class StrategyEngine:
                 log.warning(f"AEPS persist error [{vname}]: {e}")
 
     def restore_calibrators(self):
-        """Restaura AEPS al arrancar (skip aggressive — uses Shannon)."""
+        """Restaura AEPS al arrancar (skip aggressive — uses v5)."""
         for vname, vparams in VARIANTS.items():
             if vname == "aggressive":
                 continue
@@ -1962,16 +1987,16 @@ class StrategyEngine:
 
         rec_str = ", ".join(recording) if recording else "ninguno"
 
-        # AEPS status (+ Shannon for aggressive)
+        # AEPS status (+ v5 for aggressive)
         aeps_parts = []
         for vname in VARIANTS:
             if vname == "aggressive":
-                st = self.shannon_exit.status()
+                st = self.v5_exit.status()
                 stats = st.get("stats", {})
                 n = stats.get("total", 0)
                 wr = stats.get("win_rate", 0)
                 aeps_parts.append(
-                    f"A:Shannon(n={n},WR={wr:.0%})"
+                    f"A:v5(n={n},WR={wr:.0%})"
                 )
             else:
                 cal = self.exit_calibrators[vname]
@@ -2088,7 +2113,7 @@ class StrategyEngine:
             "live": {v: round(p, 2) for v, p in self.daily_pnl["live"].items()},
         }
 
-        # AEPS status (+ Shannon for aggressive)
+        # AEPS status (+ v5 for aggressive)
         aeps_status = {}
         for vname, cal in self.exit_calibrators.items():
             ap = cal.current
@@ -2107,8 +2132,8 @@ class StrategyEngine:
                 "early_abort_max_loss": round(ap.early_abort_max_loss, 4),
             }
 
-        # Shannon status for aggressive
-        shannon_status = self.shannon_exit.status()
+        # v5 status for aggressive
+        v5_status = self.v5_exit.status()
 
         status = {
             "timestamp": now,
@@ -2123,7 +2148,7 @@ class StrategyEngine:
             "equities": equities,
             "daily_pnl": daily_pnl,
             "aeps": aeps_status,
-            "shannon": shannon_status,
+            "v5": v5_status,
         }
 
         path = os.path.join(os.path.dirname(__file__), "strategy_status.json")

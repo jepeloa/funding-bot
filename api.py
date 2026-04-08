@@ -1594,16 +1594,16 @@ async def aeps_data(
     }
 
 
-@app.get("/shannon", dependencies=[Depends(verify_api_key)])
-async def shannon_data():
+@app.get("/v5", dependencies=[Depends(verify_api_key)])
+async def v5_data():
     """
-    Returns Shannon-VOI exit status for the aggressive variant.
-    Reads from logs/shannon/trades.jsonl + data/pwin_surface.json.
+    Returns v5 exit status for the aggressive variant.
+    Reads from logs/v5/trades.jsonl + data/pwin_surface.json.
     """
     import json as _json_sh
 
     base_dir = os.path.dirname(__file__)
-    trades_path = os.path.join(base_dir, "logs", "shannon", "trades.jsonl")
+    trades_path = os.path.join(base_dir, "logs", "v5", "trades.jsonl")
     surface_path = os.path.join(base_dir, "data", "pwin_surface.json")
 
     # Load trade history
@@ -1663,7 +1663,7 @@ async def shannon_data():
         })
 
     return {
-        "type": "shannon",
+        "type": "v5",
         "surface_cells": surface_cells,
         "config": {
             "prior_win": 0.566,

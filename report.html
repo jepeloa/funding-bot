@@ -252,7 +252,7 @@ let trades = [];
 let activeEquityVariant = 'all';
 let activeTableVariant = 'all';
 let activeMode = 'all';
-let activeVersions = new Set(['v2', 'v3', 'v4', 'shannon']);
+let activeVersions = new Set(['v2', 'v3', 'v4', 'v5']);
 let refreshTimer = null;
 let binanceAccounts = [];
 
@@ -287,7 +287,7 @@ function reRenderAll() {
 
 function renderVersionTabs() {
   const el = document.getElementById('ver-tabs');
-  const versions = ['v2', 'v3', 'v4', 'shannon'];
+  const versions = ['v2', 'v3', 'v4', 'v5'];
   el.innerHTML = versions.map(v => {
     const count = trades.filter(t => t.version === v).length;
     return `<button class="ver-btn ${activeVersions.has(v) ? 'active' : ''}" data-ver="${v}">${v}<span class="count">(${count})</span></button>`;
@@ -1270,7 +1270,7 @@ document.getElementById('btnDownloadPaths').addEventListener('click', async () =
   btn.textContent = '⏳ Loading…';
   try {
     const variant = document.getElementById('variantSelect').value || currentActiveVariant;
-    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(variant) + '&version=v2,v3,v4,shannon&limit=500', { headers });
+    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(variant) + '&version=v2,v3,v4,v5&limit=500', { headers });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const json = await r.json();
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });

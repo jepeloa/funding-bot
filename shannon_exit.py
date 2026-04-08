@@ -1,5 +1,5 @@
 """
-Shannon-VOI Exit System — Information-theoretic exit for aggressive variant.
+v5 Exit System — Information-theoretic exit for aggressive variant.
 
 Replaces AEPS for the aggressive variant only. Uses a pre-calibrated
 P(win | t, MFE) surface to decide EXIT / TRAIL / HOLD via Value-of-Information.
@@ -24,17 +24,18 @@ Refs:
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-log = logging.getLogger("shannon_exit")
+log = logging.getLogger("v5_exit")
 
 
 @dataclass
-class ShannonTradeState:
-    """Per-trade state tracked by the Shannon exit system."""
+class V5TradeState:
+    """Per-trade state tracked by the v5 exit system."""
     trade_id: str
     symbol: str
     open_time: float
@@ -44,15 +45,17 @@ class ShannonTradeState:
     last_pw_time: float = 0.0
     trailing_active: bool = False
     trailing_peak: float = 0.0
+    trailing_cb: float = 0.30
+    mfe_cum: float = 0.0
     action_history: list = field(default_factory=list)
 
 
-class ShannonExit:
+class V5Exit:
     """
-    Shannon-VOI exit engine.
+    v5 exit engine.
 
     Usage:
-        se = ShannonExit(surface_path, config)
+        se = V5Exit(surface_path, config)
         se.open(trade_id, symbol, now, entry_price)
         action = se.tick(trade_id, now, pnl_pct, mfe_pct, mae_pct)
         # action in ("EXIT", "TRAIL", "HOLD")
@@ -74,8 +77,15 @@ class ShannonExit:
         self.avg_pnl_w = config.get("avg_pnl_w", 0.0254)
         self.avg_pnl_l = config.get("avg_pnl_l", -0.0308)
 
+        # Pre-compute prior entropy H(O)
+        self._H_prior = self._H(self.prior_win)
+
+        # Beta-Binomial prior state
+        self._alpha = self.prior_win * 20
+        self._beta = (1 - self.prior_win) * 20
+
         # Output directory
-        self.output_dir = config.get("output_dir", "./logs/shannon")
+        self.output_dir = config.get("output_dir", "./logs/v5")
         os.makedirs(self.output_dir, exist_ok=True)
 
         # Surface: list of (t_min, mfe_pct, p_win)
@@ -85,10 +95,10 @@ class ShannonExit:
         self._load_surface()
 
         # Active trades
-        self.trades: dict[str, ShannonTradeState] = {}
+        self.trades: dict[str, V5TradeState] = {}
 
         log.info(
-            f"ShannonExit initialized | surface={len(self.surface)} points | "
+            f"V5Exit initialized | surface={len(self.surface)} points | "
             f"exit_pw={self.exit_pw} trail_pw={self.trail_pw} | "
             f"hard_sl={self.hard_sl:.1%}"
         )
@@ -101,7 +111,7 @@ class ShannonExit:
         """Load P(win) surface from JSON file."""
         if not os.path.exists(self.surface_path):
             log.warning(
-                f"ShannonExit: surface file not found: {self.surface_path} — "
+                f"V5Exit: surface file not found: {self.surface_path} — "
                 f"using flat prior {self.prior_win:.3f}"
             )
             return
@@ -115,12 +125,19 @@ class ShannonExit:
             # Build lookup dict for fast access
             self._surf_dict = {(r[0], r[1]): r[2] for r in self.surface}
             log.info(
-                f"ShannonExit: loaded surface | "
+                f"V5Exit: loaded surface | "
                 f"t_grid={self.t_grid} | m_grid={self.m_grid} | "
                 f"{len(self.surface)} cells"
             )
         except Exception as e:
-            log.error(f"ShannonExit: failed to load surface: {e}")
+            log.error(f"V5Exit: failed to load surface: {e}")
+
+    @staticmethod
+    def _H(p: float) -> float:
+        """Binary Shannon entropy H(p) in bits."""
+        if p <= 0.001 or p >= 0.999:
+            return 0.0
+        return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
 
     def reload_surface(self, path: Optional[str] = None):
         """Hot-reload surface from disk (called after recalibration)."""
@@ -183,7 +200,7 @@ class ShannonExit:
     def open(self, trade_id: str, symbol: str, now: float,
              entry_price: float):
         """Register a new trade."""
-        self.trades[trade_id] = ShannonTradeState(
+        self.trades[trade_id] = V5TradeState(
             trade_id=trade_id,
             symbol=symbol,
             open_time=now,
@@ -192,7 +209,7 @@ class ShannonExit:
             last_pw_time=now,
         )
         log.info(
-            f"Shannon OPEN | {symbol} #{trade_id} "
+            f"v5 OPEN | {symbol} #{trade_id} "
             f"@ ${entry_price:.6f} | π_W={self.prior_win:.3f}"
         )
 
@@ -210,12 +227,17 @@ class ShannonExit:
         elapsed_sec = now - ts.open_time
         t_min = elapsed_sec / 60.0
 
-        # Query surface
-        pw = self._query_pw(t_min, mfe_pct * 100)  # surface uses pct (0-20)
+        # Track cumulative MFE
+        ts.mfe_cum = max(ts.mfe_cum, mfe_pct)
 
-        # Info rate: dP(win)/dt
+        # Query surface (mfe_pct is fraction e.g. 0.012; surface uses pct 0-20)
+        pw = self._query_pw(t_min, ts.mfe_cum * 100)
+
+        # Info rate: dI/dt where I = H(O) - H(O|obs) (Shannon information)
         dt = now - ts.last_pw_time if ts.last_pw_time > 0 else 1.0
-        info_rate = abs(pw - ts.last_pw) / max(dt, 1.0) if dt > 0 else 0.0
+        I_now = self._H_prior - self._H(pw)
+        I_prev = self._H_prior - self._H(ts.last_pw)
+        info_rate = abs(I_now - I_prev) / max(dt, 1.0)
 
         # Update state
         ts.last_pw = pw
@@ -225,7 +247,7 @@ class ShannonExit:
         if pnl_pct <= -self.hard_sl:
             return "EXIT"
 
-        # ── Shannon decision ──
+        # ── v5 decision ──
         action = "HOLD"
 
         if pw < self.exit_pw:
@@ -233,14 +255,22 @@ class ShannonExit:
             if elapsed_sec >= self.min_observe_sec:
                 action = "EXIT"
 
+        elif pw < 0.45 and elapsed_sec >= self.min_observe_sec:
+            # EV exit: E[PnL|continue] < current PnL → cut
+            ev_continue = pw * self.avg_pnl_w + (1 - pw) * self.avg_pnl_l
+            if ev_continue < pnl_pct:
+                action = "EXIT"
+
         elif pw >= self.trail_pw:
             # High probability → activate trail to capture
             if not ts.trailing_active:
                 ts.trailing_active = True
                 ts.trailing_peak = pnl_pct
+                ts.trailing_cb = 0.30 + (pw - 0.70) * 0.833
+                ts.trailing_cb = max(0.25, min(0.55, ts.trailing_cb))
                 log.info(
-                    f"Shannon TRAIL activated | {ts.symbol} #{trade_id} "
-                    f"| P(win)={pw:.3f} MFE={mfe_pct:.2%}"
+                    f"v5 TRAIL activated | {ts.symbol} #{trade_id} "
+                    f"| P(win)={pw:.3f} MFE={mfe_pct:.2%} cb={ts.trailing_cb:.2%}"
                 )
             action = "TRAIL"
 
@@ -255,12 +285,15 @@ class ShannonExit:
         if ts.trailing_active:
             if pnl_pct > ts.trailing_peak:
                 ts.trailing_peak = pnl_pct
-            trail_floor = ts.trailing_peak * (1.0 - self.trailing_callback)
+                # Re-calibrate callback with current P(win)
+                ts.trailing_cb = 0.30 + (pw - 0.70) * 0.833
+                ts.trailing_cb = max(0.25, min(0.55, ts.trailing_cb))
+            trail_floor = ts.trailing_peak * (1.0 - ts.trailing_cb)
             if pnl_pct < trail_floor and ts.trailing_peak > 0:
                 action = "EXIT"
 
-        # Record action
-        ts.action_history.append((now, pw, action, pnl_pct, mfe_pct))
+        # Record action (uses cumulative MFE for surface recalibration)
+        ts.action_history.append((now, pw, action, pnl_pct, ts.mfe_cum))
 
         return action
 
@@ -298,7 +331,7 @@ class ShannonExit:
             with open(log_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
         except Exception as e:
-            log.warning(f"Shannon: failed to write trade log: {e}")
+            log.warning(f"v5: failed to write trade log: {e}")
 
         # Append detailed path for surface recalibration
         detail_path = os.path.join(self.output_dir, "trade_details.jsonl")
@@ -321,19 +354,33 @@ class ShannonExit:
             with open(detail_path, "a") as f:
                 f.write(json.dumps(detail) + "\n")
         except Exception as e:
-            log.warning(f"Shannon: failed to write detail log: {e}")
+            log.warning(f"v5: failed to write detail log: {e}")
+
+        # Update Beta-Binomial prior
+        self._update_prior(is_winner)
 
         emoji = "🟢" if is_winner else "🔻"
         log.warning(
-            f"{emoji} Shannon CLOSE | {ts.symbol} #{trade_id} "
+            f"{emoji} v5 CLOSE | {ts.symbol} #{trade_id} "
             f"| reason={reason} PnL={pnl_pct:+.2%} "
-            f"| π_W={ts.last_pw:.3f} trail={ts.trailing_active} "
+            f"| π_W={ts.last_pw:.3f}→{self.prior_win:.3f} trail={ts.trailing_active} "
             f"| hold={elapsed/60:.1f}min | ticks={len(ts.action_history)}"
         )
 
     # ──────────────────────────────────────────────────────────
     #  Status
     # ──────────────────────────────────────────────────────────
+
+    def _update_prior(self, is_winner: bool, decay: float = 0.97):
+        """Update prior P(win) via Beta-Binomial filter with exponential decay."""
+        self._alpha *= decay
+        self._beta *= decay
+        if is_winner:
+            self._alpha += 1
+        else:
+            self._beta += 1
+        self.prior_win = self._alpha / (self._alpha + self._beta)
+        self._H_prior = self._H(self.prior_win)
 
     def status(self) -> dict:
         """Return current status for API/dashboard."""
@@ -351,7 +398,7 @@ class ShannonExit:
         stats = self._compute_stats()
 
         return {
-            "type": "shannon",
+            "type": "v5",
             "active_trades": active,
             "surface_loaded": len(self.surface) > 0,
             "surface_cells": len(self.surface),
