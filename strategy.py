@@ -38,6 +38,7 @@ from config import (
     load_trading_config,
 )
 from adaptive_exit import AdaptiveExitCalibrator, TradeRecord
+from shannon_exit import V5Exit
 
 log = logging.getLogger("strategy")
 
@@ -692,10 +693,26 @@ class StrategyEngine:
             f"capital=${INITIAL_CAPITAL:,.0f}/variante"
         )
 
-        # AEPS: un calibrador por variante
+        # AEPS: un calibrador por variante (aggressive usa v5, no AEPS)
         self.exit_calibrators: dict[str, AdaptiveExitCalibrator] = {}
         for vname, vparams in VARIANTS.items():
+            if vname == "aggressive":
+                continue
             self.exit_calibrators[vname] = AdaptiveExitCalibrator(vparams)
+
+        # v5 exit para aggressive
+        surface_path = os.path.join(os.path.dirname(__file__), "data", "pwin_surface.json")
+        v5_config = {
+            "prior_win": 0.566,
+            "exit_pw": 0.50,
+            "trail_pw": 0.70,
+            "info_rate_eps": 0.005,
+            "min_observe_sec": 60,
+            "hard_sl": 0.08,
+            "trailing_callback": 0.30,
+            "output_dir": os.path.join(os.path.dirname(__file__), "logs", "v5"),
+        }
+        self.v5_exit = V5Exit(surface_path, v5_config)
 
     def get_state(self, symbol: str) -> SymbolState:
         sym = symbol.upper()
@@ -876,6 +893,10 @@ class StrategyEngine:
                               vtrade: VariantTradeState,
                               vname: str, vparams: dict, now: float):
         """Evalúa condiciones de entrada SHORT para una variante específica."""
+
+        # Aggressive mirrors base entries (v5)
+        if vname == "aggressive":
+            return
 
         # ── Cooldown ──
         cooldown_secs = vparams["cooldown_hours"] * 3600
@@ -1061,6 +1082,8 @@ class StrategyEngine:
             "entry_snapshot": snapshot,
             "trading_mode": trade_mode,
         }
+        if vname == "aggressive":
+            trade_data["strategy_version"] = "v5"
 
         trade_id = await self.writer.open_virtual_trade(trade_data)
 
@@ -1080,6 +1103,12 @@ class StrategyEngine:
         vtrade.partial_tp_taken = False
         vtrade.original_qty = actual_qty
         vtrade.zombie_checked = False
+
+        # v5: register trade opening for aggressive variant
+        if vname == "aggressive":
+            self.v5_exit.open(
+                str(trade_id), state.symbol, now, actual_entry_price
+            )
 
         mode_tag = trade_mode.upper()
         log.warning(
@@ -1104,6 +1133,22 @@ class StrategyEngine:
             except Exception:
                 pass
 
+        # ── Aggressive mirrors base: open aggressive when base opens ──
+        if vname == "base":
+            agg_vtrade = self.variant_trades["aggressive"].get(state.symbol)
+            agg_params = VARIANTS["aggressive"]
+            if agg_vtrade is not None and agg_vtrade.open_trade_id is None:
+                cooldown = agg_params["cooldown_hours"] * 3600
+                if now - agg_vtrade.last_trade_close_time >= cooldown:
+                    entry_mode = ("live" if (self.trading_mode == "live"
+                                             and self.trader is not None
+                                             and "aggressive" == self.active_variant)
+                                  else "paper")
+                    if not self.halted[entry_mode]["aggressive"]:
+                        await self._open_trade(
+                            state, agg_vtrade, "aggressive", agg_params, now
+                        )
+
         # Grabar snapshot de entrada
         await self.writer.insert_snapshot(snapshot)
 
@@ -1117,7 +1162,16 @@ class StrategyEngine:
         """Evalúa condiciones de salida para un trade abierto.
         Usa parámetros adaptativos (AEPS) para todos los thresholds de salida.
         Los parámetros de ENTRADA siguen usando vparams[].
+        Aggressive variante usa v5 en vez de AEPS.
         """
+        # Aggressive → v5 exit path (isolated to not crash base exits)
+        if vname == "aggressive":
+            try:
+                await self._evaluate_exit_v5(state, vtrade, vparams, now)
+            except Exception as e:
+                log.error(f"v5 exit error [{state.symbol}]: {e}", exc_info=True)
+            return
+
         price = state.mark_price
         entry = vtrade.entry_price
 
@@ -1237,6 +1291,178 @@ class StrategyEngine:
         if exit_reason:
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
+
+    async def _evaluate_exit_v5(self, state: SymbolState,
+                                vtrade: VariantTradeState,
+                                vparams: dict, now: float):
+        """v5 exit evaluation for aggressive variant."""
+        price = state.mark_price
+        entry = vtrade.entry_price
+        vname = "aggressive"
+
+        if entry <= 0 or price <= 0:
+            return
+
+        pnl_pct = (entry - price) / entry
+        hold_hours = (now - vtrade.entry_time) / 3600.0
+
+        # Update MFE / MAE (aggressive skips the AEPS path that does this)
+        if pnl_pct > vtrade.mfe:
+            vtrade.mfe = pnl_pct
+            vtrade.mfe_timestamp = now
+        if pnl_pct < vtrade.mae:
+            vtrade.mae = pnl_pct
+
+        # Funding collection
+        funding_interval = state.funding_interval_secs
+        if now - vtrade.last_funding_collection >= funding_interval:
+            if state.funding_rate > 0 and vtrade.entry_notional > 0:
+                current_notional = vtrade.entry_notional * state.mark_price / vtrade.entry_price if vtrade.entry_price > 0 else vtrade.entry_notional
+                funding_payment = state.funding_rate * current_notional
+                vtrade.funding_collected += funding_payment
+            vtrade.last_funding_collection = now
+
+        mfe_pct = vtrade.mfe
+        mae_pct = vtrade.mae
+
+        # v5 tick
+        trade_id_str = str(vtrade.open_trade_id)
+        action = self.v5_exit.tick(
+            trade_id_str, now, pnl_pct, mfe_pct, mae_pct
+        )
+
+        exit_reason = None
+
+        # v5 decision → exit
+        if action == "EXIT":
+            if pnl_pct <= -self.v5_exit.hard_sl:
+                exit_reason = "stop_loss"
+            elif self.v5_exit.trades.get(trade_id_str) and \
+                 self.v5_exit.trades[trade_id_str].trailing_active:
+                exit_reason = "trailing_stop"
+            else:
+                exit_reason = "v5_exit"
+
+        # Static safety nets (override v5 HOLD)
+        # ── Take Profit 20% ──
+        if not exit_reason and pnl_pct >= vparams["take_profit_pct"]:
+            exit_reason = "take_profit"
+
+        # ── OI Circuit Breaker ──
+        if not exit_reason and vtrade.entry_oi > 0 and state.oi_value > 0:
+            oi_change = (state.oi_value - vtrade.entry_oi) / vtrade.entry_oi
+            if oi_change > vparams["oi_abort_pct"]:
+                exit_reason = "oi_abort"
+
+        # ── Maximum Hold 72h ──
+        if not exit_reason and hold_hours >= vparams["max_hold_hours"]:
+            exit_reason = "max_hold"
+
+        # ── Pump Capture ──
+        if not exit_reason and (mfe_pct >= 0.5 * abs(state.price_change_24h)
+              and mfe_pct > 0.01
+              and state.exhaustion >= 2):
+            exit_reason = "pump_capture"
+
+        if exit_reason:
+            # Close v5 state first
+            self.v5_exit.close(trade_id_str, pnl_pct, exit_reason)
+
+            # Close the actual trade
+            await self._close_trade(state, vtrade, vname, vparams, now,
+                                    price, pnl_pct, exit_reason)
+
+            # Rebuild surface from all closed aggressive (v5) trades
+            try:
+                await self._rebuild_v5_surface()
+            except Exception as e:
+                log.warning(f"v5 surface rebuild failed: {e}")
+
+    async def _rebuild_v5_surface(self):
+        """Rebuild P(win) surface after an aggressive trade closes.
+
+        Uses aggressive's own trades once it has >= 30 closed trades,
+        otherwise bootstraps from base variant trades.
+        """
+        import asyncpg
+        from scripts.bootstrap_surface_from_db import build_surface_from_trades
+
+        MIN_SELF_TRADES = 30  # minimum aggressive trades before self-calibration
+
+        pool = await asyncpg.create_pool(
+            host='localhost', port=5432, database='binance_futures',
+            user='recorder', password='K32CzfnWtWtLoj98n6R5QTqEx3jLYLv5',
+            min_size=1, max_size=2,
+        )
+        try:
+            # Check how many aggressive trades we have
+            async with pool.acquire() as conn:
+                agg_count = await conn.fetchval("""
+                    SELECT count(*)
+                    FROM virtual_trades
+                    WHERE variant = 'aggressive'
+                      AND status = 'closed'
+                      AND exit_time IS NOT NULL
+                """)
+
+            # Pick source: aggressive if enough trades, else bootstrap from base
+            if agg_count >= MIN_SELF_TRADES:
+                source_variant = 'aggressive'
+            else:
+                source_variant = 'base'
+
+            async with pool.acquire() as conn:
+                trades = await conn.fetch("""
+                    SELECT id, symbol, entry_price, entry_time, exit_time,
+                           pnl_pct
+                    FROM virtual_trades
+                    WHERE variant = $1
+                      AND status = 'closed'
+                      AND exit_time IS NOT NULL
+                """, source_variant)
+            if not trades:
+                return
+
+            import asyncio
+            sem = asyncio.Semaphore(8)
+            all_candles = {}
+
+            async def _fetch(t):
+                async with sem:
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch("""
+                            SELECT bucket, open, high, low, close
+                            FROM ohlcv_1m
+                            WHERE symbol = $1
+                              AND bucket >= to_timestamp($2) - interval '1 minute'
+                              AND bucket <= to_timestamp($3) + interval '1 minute'
+                            ORDER BY bucket
+                        """, t['symbol'], float(t['entry_time']),
+                            float(t['exit_time']))
+                    return t['id'], rows
+
+            results = await asyncio.gather(*[_fetch(t) for t in trades])
+            for tid, rows in results:
+                all_candles[tid] = rows
+
+            surface = build_surface_from_trades(trades, all_candles)
+            surface_path = os.path.join(
+                os.path.dirname(__file__), "data", "pwin_surface.json"
+            )
+            import json as _json
+            tmp = surface_path + ".tmp"
+            with open(tmp, "w") as f:
+                _json.dump(surface, f)
+            os.replace(tmp, surface_path)
+
+            self.v5_exit.reload_surface()
+            log.info(
+                f"v5 surface rebuilt: {len(surface)} cells "
+                f"from {len(trades)} {source_variant} trades"
+                f"{'' if source_variant == 'aggressive' else ' (bootstrap)'}"
+            )
+        finally:
+            await pool.close()
 
     async def _partial_close_trade(self, state: SymbolState,
                                    vtrade: VariantTradeState,
@@ -1416,40 +1642,41 @@ class StrategyEngine:
 
         await self.writer.close_virtual_trade(trade_id, exit_data)
 
-        # ── AEPS: registrar trade en calibrador ──
-        try:
-            record = TradeRecord(
-                mfe_pct=vtrade.mfe,
-                mae_pct=vtrade.mae,
-                etd_pct=vtrade.mfe - pnl_pct,
-                pnl_pct=pnl_pct,
-                atr_at_entry=state.atr_pct,
-                time_to_mfe_secs=(vtrade.mfe_timestamp - vtrade.entry_time)
-                                  if vtrade.mfe_timestamp > 0 else 0,
-                hold_secs=(now - vtrade.entry_time),
-                exit_reason=reason,
-                score_at_entry=state.score,
-                is_winner=(pnl_pct > 0),
-            )
-            cal = self.exit_calibrators[vname]
-            prev_cal_count = cal._calibration_count
-            cal.add_trade(record)
-            # Telegram notification on recalibration
-            if cal._calibration_count > prev_cal_count and self.telegram:
-                try:
-                    ap = cal.current
-                    await self.telegram.send_message(
-                        f"🔧 *AEPS Recalibrado* [{vname}]\n"
-                        f"SL: {ap.stop_loss_pct:.2%} | "
-                        f"Trailing: {ap.trailing_activation_pct:.2%}/{ap.trailing_callback_pct:.0%}\n"
-                        f"PTP: {ap.partial_tp_mfe_pct:.2%} | "
-                        f"Abort: {ap.early_abort_hours:.1f}h/{ap.early_abort_max_mfe:.2%}\n"
-                        f"Basado en últimos {ap.calibration_n} trades"
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            log.warning(f"AEPS feed error [{vname}]: {e}")
+        # ── AEPS: registrar trade en calibrador (skip aggressive — uses v5) ──
+        if vname in self.exit_calibrators:
+            try:
+                record = TradeRecord(
+                    mfe_pct=vtrade.mfe,
+                    mae_pct=vtrade.mae,
+                    etd_pct=vtrade.mfe - pnl_pct,
+                    pnl_pct=pnl_pct,
+                    atr_at_entry=state.atr_pct,
+                    time_to_mfe_secs=(vtrade.mfe_timestamp - vtrade.entry_time)
+                                      if vtrade.mfe_timestamp > 0 else 0,
+                    hold_secs=(now - vtrade.entry_time),
+                    exit_reason=reason,
+                    score_at_entry=state.score,
+                    is_winner=(pnl_pct > 0),
+                )
+                cal = self.exit_calibrators[vname]
+                prev_cal_count = cal._calibration_count
+                cal.add_trade(record)
+                # Telegram notification on recalibration
+                if cal._calibration_count > prev_cal_count and self.telegram:
+                    try:
+                        ap = cal.current
+                        await self.telegram.send_message(
+                            f"🔧 *AEPS Recalibrado* [{vname}]\n"
+                            f"SL: {ap.stop_loss_pct:.2%} | "
+                            f"Trailing: {ap.trailing_activation_pct:.2%}/{ap.trailing_callback_pct:.0%}\n"
+                            f"PTP: {ap.partial_tp_mfe_pct:.2%} | "
+                            f"Abort: {ap.early_abort_hours:.1f}h/{ap.early_abort_max_mfe:.2%}\n"
+                            f"Basado en últimos {ap.calibration_n} trades"
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.warning(f"AEPS feed error [{vname}]: {e}")
 
         # Actualizar equity de la variante (separado por modo del trade)
         tmode = vtrade.trade_mode
@@ -1699,8 +1926,10 @@ class StrategyEngine:
                 log.warning(f"AEPS persist error [{vname}]: {e}")
 
     def restore_calibrators(self):
-        """Restaura AEPS al arrancar."""
+        """Restaura AEPS al arrancar (skip aggressive — uses v5)."""
         for vname, vparams in VARIANTS.items():
+            if vname == "aggressive":
+                continue
             path = os.path.join(os.path.dirname(__file__), f"aeps_{vname}.json")
             if os.path.exists(path):
                 try:
@@ -1758,15 +1987,24 @@ class StrategyEngine:
 
         rec_str = ", ".join(recording) if recording else "ninguno"
 
-        # AEPS status
+        # AEPS status (+ v5 for aggressive)
         aeps_parts = []
         for vname in VARIANTS:
-            cal = self.exit_calibrators[vname]
-            aeps_parts.append(
-                f"{vname[0].upper()}: "
-                f"SL={cal.current.stop_loss_pct:.1%}/"
-                f"T={cal.current.trailing_activation_pct:.1%}"
-            )
+            if vname == "aggressive":
+                st = self.v5_exit.status()
+                stats = st.get("stats", {})
+                n = stats.get("total", 0)
+                wr = stats.get("win_rate", 0)
+                aeps_parts.append(
+                    f"A:v5(n={n},WR={wr:.0%})"
+                )
+            else:
+                cal = self.exit_calibrators[vname]
+                aeps_parts.append(
+                    f"{vname[0].upper()}: "
+                    f"SL={cal.current.stop_loss_pct:.1%}/"
+                    f"T={cal.current.trailing_activation_pct:.1%}"
+                )
         aeps_str = " | ".join(aeps_parts)
 
         return (
@@ -1875,7 +2113,7 @@ class StrategyEngine:
             "live": {v: round(p, 2) for v, p in self.daily_pnl["live"].items()},
         }
 
-        # AEPS status
+        # AEPS status (+ v5 for aggressive)
         aeps_status = {}
         for vname, cal in self.exit_calibrators.items():
             ap = cal.current
@@ -1894,6 +2132,9 @@ class StrategyEngine:
                 "early_abort_max_loss": round(ap.early_abort_max_loss, 4),
             }
 
+        # v5 status for aggressive
+        v5_status = self.v5_exit.status()
+
         status = {
             "timestamp": now,
             "strategy_version": STRATEGY_VERSION,
@@ -1907,6 +2148,7 @@ class StrategyEngine:
             "equities": equities,
             "daily_pnl": daily_pnl,
             "aeps": aeps_status,
+            "v5": v5_status,
         }
 
         path = os.path.join(os.path.dirname(__file__), "strategy_status.json")

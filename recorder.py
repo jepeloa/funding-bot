@@ -12,6 +12,7 @@ Arquitectura:
 import asyncio
 import json
 import logging
+import logging.handlers
 import math
 import os
 import signal
@@ -46,11 +47,29 @@ from db import init_db, AsyncDBWriter
 from strategy import StrategyEngine
 
 # ── Logging ────────────────────────────────────────────────────────
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+
+_LOG_FORMAT = "%(asctime)s │ %(levelname)-7s │ %(name)-10s │ %(message)s"
+_LOG_DATE   = "%Y-%m-%d %H:%M:%S"
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
-    format="%(asctime)s │ %(levelname)-7s │ %(name)-10s │ %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format=_LOG_FORMAT,
+    datefmt=_LOG_DATE,
 )
+
+# Archivo rotativo: 50 MB × 10 archivos ≈ 500 MB total
+_file_handler = logging.handlers.RotatingFileHandler(
+    filename=os.path.join(_LOG_DIR, "recorder.log"),
+    maxBytes=50 * 1024 * 1024,
+    backupCount=10,
+    encoding="utf-8",
+)
+_file_handler.setLevel(getattr(logging, LOG_LEVEL))
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE))
+logging.getLogger().addHandler(_file_handler)
+
 log = logging.getLogger("recorder")
 
 # ── PID file ───────────────────────────────────────────────────────
