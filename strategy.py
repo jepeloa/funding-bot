@@ -99,6 +99,7 @@ class VariantTradeState:
     original_qty: float = 0.0   # qty antes del cierre parcial
     partial_tp_pnl_usd: float = 0.0  # PnL realizado del TP parcial
     zombie_checked: bool = False  # True después de evaluar zombie_kill (una sola vez)
+    mfe_2min_snapshot: Optional[float] = None  # MFE snapshot at 2min mark (base simplified exit)
 
 
 class SymbolState:
@@ -1103,6 +1104,7 @@ class StrategyEngine:
         vtrade.partial_tp_taken = False
         vtrade.original_qty = actual_qty
         vtrade.zombie_checked = False
+        vtrade.mfe_2min_snapshot = None
 
         # v5: register trade opening for aggressive variant
         if vname == "aggressive":
@@ -1180,7 +1182,8 @@ class StrategyEngine:
 
         # PnL % del SHORT (sin leverage): (entry - price) / entry
         pnl_pct = (entry - price) / entry
-        hold_hours = (now - vtrade.entry_time) / 3600.0
+        hold_secs = now - vtrade.entry_time
+        hold_hours = hold_secs / 3600.0
 
         # Actualizar MFE / MAE
         if pnl_pct > vtrade.mfe:
@@ -1197,6 +1200,52 @@ class StrategyEngine:
                 vtrade.funding_collected += funding_payment
             vtrade.last_funding_collection = now
 
+        # ══════════════════════════════════════════════════════════
+        #  BASE variant: simplified fixed exit rules
+        # ══════════════════════════════════════════════════════════
+        if vname == "base":
+            exit_reason = None
+
+            # 1. Hard Stop Loss 5%
+            if pnl_pct <= -0.05:
+                exit_reason = "stop_loss"
+
+            # 2. MFE snapshot at 4-min mark
+            if vtrade.mfe_2min_snapshot is None and hold_secs >= 240:
+                vtrade.mfe_2min_snapshot = vtrade.mfe
+                # Persist snapshot to DB (entry_snapshot JSONB)
+                try:
+                    async with self.writer._pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE virtual_trades "
+                            "SET entry_snapshot = entry_snapshot || $1::jsonb "
+                            "WHERE id = $2",
+                            json.dumps({"mfe_2min_snapshot": vtrade.mfe_2min_snapshot}),
+                            vtrade.open_trade_id,
+                        )
+                except Exception as e:
+                    log.debug(f"mfe_2min_snapshot persist error #{vtrade.open_trade_id}: {e}")
+
+            # 3. Timer exit based on snapshot
+            if not exit_reason and vtrade.mfe_2min_snapshot is not None:
+                if vtrade.mfe_2min_snapshot >= 0.008:
+                    # Good MFE → wait total 10 min (600s)
+                    if hold_secs >= 600:
+                        exit_reason = "exit_10min"
+                else:
+                    # Low MFE → wait total 5 min (300s)
+                    if hold_secs >= 300:
+                        exit_reason = "exit_5min"
+
+            if exit_reason:
+                await self._close_trade(state, vtrade, vname, vparams, now,
+                                        price, pnl_pct, exit_reason)
+            return
+
+        # ══════════════════════════════════════════════════════════
+        #  Non-base variants: AEPS adaptive exit (unchanged)
+        # ══════════════════════════════════════════════════════════
+
         # ── AEPS: obtener parámetros adaptativos ──
         calibrator = self.exit_calibrators[vname]
         ap = calibrator.get_params(current_atr_pct=state.atr_pct)
@@ -1204,15 +1253,12 @@ class StrategyEngine:
         exit_reason = None
 
         # ── Early Abort (adaptive) ──
-        # v4.1: removed pnl_pct condition — MFE velocity is the causal signal
         if (ap.early_abort_hours > 0
               and hold_hours > ap.early_abort_hours
               and vtrade.mfe < ap.early_abort_max_mfe):
             exit_reason = "early_abort"
 
         # ── Zombie Kill: post-abort MFE filter (one-time check) ──
-        # Si pasó el abort window, MFE sobrevivió el abort pero sigue
-        # por debajo del zombie threshold → trade muerto, cerrar.
         if (not exit_reason
               and not vtrade.zombie_checked
               and ap.early_abort_hours > 0
@@ -1234,7 +1280,6 @@ class StrategyEngine:
                     state, vtrade, vname, vparams, now, price, ap.partial_tp_fraction,
                 )
 
-        # Profit lock: si ya se tomó parcial y pnl cayó bajo el floor, salir
         if not exit_reason and vtrade.partial_tp_taken and ap.profit_lock_pct > 0:
             if pnl_pct <= ap.profit_lock_pct:
                 exit_reason = "profit_lock"
@@ -1261,7 +1306,7 @@ class StrategyEngine:
         if not exit_reason and pnl_pct <= -ap.stop_loss_pct:
             exit_reason = "stop_loss"
 
-        # ── (ii) Take Profit (static — no adaptar, es el cap final) ──
+        # ── (ii) Take Profit (static) ──
         if not exit_reason and pnl_pct >= vparams["take_profit_pct"]:
             exit_reason = "take_profit"
 

@@ -988,165 +988,227 @@ async def trade_exit_signals():
 
             # ── Build each exit signal status ──
             signals = []
+            hold_secs = (now - entry_time)
 
-            # 1. Stop Loss
-            sl_distance = (-pnl_pct - sl_pct) / sl_pct  # negative = still safe
-            sl_price = entry_price * (1 + sl_pct)
-            signals.append({
-                "name": "Stop Loss",
-                "icon": "🛑",
-                "threshold": f"-{sl_pct*100:.1f}%",
-                "current": f"{pnl_pct*100:+.2f}%",
-                "progress": min(max(-pnl_pct / sl_pct * 100, 0), 100),
-                "triggered": pnl_pct <= -sl_pct,
-                "detail": f"SL @ ${sl_price:.6g} (mark ${mark_price:.6g})",
-            })
+            # ══════════════════════════════════════════════════════════
+            #  BASE variant: simplified fixed exit signals (3 bars)
+            # ══════════════════════════════════════════════════════════
+            if vname == "base":
+                # Read mfe_2min_snapshot from entry_snapshot JSONB
+                mfe_snapshot = snap.get("mfe_2min_snapshot")
+                snapshot_taken = mfe_snapshot is not None
 
-            # 2. Take Profit
-            tp_price = entry_price * (1 - tp_pct)
-            signals.append({
-                "name": "Take Profit",
-                "icon": "🎯",
-                "threshold": f"+{tp_pct*100:.1f}%",
-                "current": f"{pnl_pct*100:+.2f}%",
-                "progress": min(max(pnl_pct / tp_pct * 100, 0), 100),
-                "triggered": pnl_pct >= tp_pct,
-                "detail": f"TP @ ${tp_price:.6g} (mark ${mark_price:.6g})",
-            })
-
-            # 3. Trailing continuo con floor dinámico
-            trail_floor = None
-            if breakeven_trig > 0 and mfe >= breakeven_trig:
-                if trail_act > 0 and mfe >= trail_act:
-                    trail_floor = mfe * (1.0 - trail_cb)
-                else:
-                    range_width = max(trail_act - breakeven_trig, 0.001)
-                    progress_ramp = min((mfe - breakeven_trig) / range_width, 1.0)
-                    max_floor = mfe * (1.0 - trail_cb)
-                    trail_floor = progress_ramp * max_floor
-            elif trail_act > 0 and mfe >= trail_act:
-                trail_floor = mfe * (1.0 - trail_cb)
-
-            trail_active = trail_floor is not None
-            trail_progress = 0
-            if breakeven_trig > 0:
-                trail_progress = min(mfe / breakeven_trig * 100, 100)
-            elif trail_act > 0:
-                trail_progress = min(mfe / trail_act * 100, 100)
-
-            signals.append({
-                "name": "Trailing Stop",
-                "icon": "📐",
-                "threshold": f"BE≥{breakeven_trig*100:.1f}% → trail → {trail_act*100:.1f}%",
-                "current": f"MFE={mfe*100:.2f}%",
-                "progress": trail_progress,
-                "triggered": trail_active and pnl_pct < trail_floor,
-                "detail": f"Floor={trail_floor*100:.2f}%, PnL={pnl_pct*100:.2f}%" if trail_active else f"Inactivo (MFE < {breakeven_trig*100:.1f}%)",
-            })
-
-            # 5. Max Hold
-            signals.append({
-                "name": "Max Hold Time",
-                "icon": "⏰",
-                "threshold": f"{max_hold}h",
-                "current": f"{hold_hours:.1f}h",
-                "progress": min(hold_hours / max_hold * 100, 100),
-                "triggered": hold_hours >= max_hold,
-                "detail": f"Faltan {max(max_hold - hold_hours, 0):.1f}h",
-            })
-
-            # 6. OI Abort
-            signals.append({
-                "name": "OI Abort",
-                "icon": "📊",
-                "threshold": f"ΔOI>{oi_abort_pct*100:.0f}%",
-                "current": f"ΔOI={oi_change*100:+.2f}%",
-                "progress": min(max(oi_change / oi_abort_pct * 100, 0), 100) if oi_abort_pct > 0 else 0,
-                "triggered": oi_change > oi_abort_pct,
-                "detail": f"OI entry={entry_oi:,.0f} → now={current_oi:,.0f}",
-            })
-
-            # 7. Pump Capture
-            half_pump = 0.5 * abs(price_change_24h) if abs(price_change_24h) > 0 else 0.01
-            pc_progress = min(mfe / half_pump * 100, 100) if half_pump > 0 else 0
-            signals.append({
-                "name": "Pump Capture",
-                "icon": "🚀",
-                "threshold": f"MFE≥½|ΔP24h| ({half_pump*100:.2f}%)",
-                "current": f"MFE={mfe*100:.2f}%, Ê≥2",
-                "progress": pc_progress,
-                "triggered": False,  # computed in strategy with live exhaustion
-                "detail": f"ΔP24h={price_change_24h*100:+.1f}%",
-            })
-
-            # 8. Reversal Signal
-            rev_conditions = [
-                hold_hours >= min_hold,
-                pnl_pct > 0.01,
-                oi_change_1h > 0,
-                taker_buy_ratio > 0.55,
-            ]
-            rev_met = sum(rev_conditions)
-            signals.append({
-                "name": "Reversal Signal",
-                "icon": "🔄",
-                "threshold": "hold≥min & PnL>1% & dOI₁ₕ>0 & η_buy>55%",
-                "current": f"{rev_met}/4 condiciones",
-                "progress": rev_met / 4 * 100,
-                "triggered": all(rev_conditions),
-                "detail": f"hold={'✓' if rev_conditions[0] else '✗'} PnL={'✓' if rev_conditions[1] else '✗'} dOI={'✓' if rev_conditions[2] else '✗'} η={'✓' if rev_conditions[3] else '✗'}",
-            })
-
-            # 9. Partial TP (MAX scheme)
-            pt_mfe = pt_mfe_aeps if pt_mfe_aeps is not None else vparams.get("partial_tp_mfe_pct", 0)
-            pt_frac = pt_frac_aeps if pt_frac_aeps is not None else vparams.get("partial_tp_fraction", 0)
-            if pt_mfe > 0:
-                pt_progress = min(mfe / pt_mfe * 100, 100)
+                # 1. Stop Loss 5%
+                sl_fixed = 0.05
+                sl_price = entry_price * (1 + sl_fixed)
                 signals.append({
-                    "name": "Partial TP",
-                    "icon": "✂️",
-                    "threshold": f"{pt_frac*100:.0f}% @ MFE≥{pt_mfe*100:.1f}%",
-                    "current": f"MFE={mfe*100:.2f}%",
-                    "progress": pt_progress,
-                    "triggered": mfe >= pt_mfe,
-                    "detail": f"Cierra {pt_frac*100:.0f}% cuando MFE alcance {pt_mfe*100:.1f}%",
+                    "name": "Stop Loss 5%",
+                    "icon": "🛑",
+                    "threshold": "-5.0%",
+                    "current": f"{pnl_pct*100:+.2f}%",
+                    "progress": min(max(-pnl_pct / sl_fixed * 100, 0), 100),
+                    "triggered": pnl_pct <= -sl_fixed,
+                    "detail": f"SL @ ${sl_price:.6g} (mark ${mark_price:.6g})",
                 })
 
-            # 10. Profit Lock (post partial TP)
-            p_lock = p_lock_aeps if p_lock_aeps is not None else vparams.get("profit_lock_pct", 0)
-            if p_lock > 0 and pt_mfe > 0:
-                lock_active = mfe >= pt_mfe  # partial TP already triggered
-                if lock_active:
-                    lock_progress = min(max((p_lock - pnl_pct) / p_lock * 100, 0), 100) if p_lock > 0 else 0
+                # 2. MFE Snapshot @4min
+                snap_progress = min(hold_secs / 240 * 100, 100)
+                if snapshot_taken:
+                    snap_detail = f"Snapshot: {mfe_snapshot*100:.3f}% ({'≥0.8% → 10min' if mfe_snapshot >= 0.008 else '<0.8% → 5min'})"
                 else:
-                    lock_progress = 0
+                    snap_detail = f"Pendiente — faltan {max(240 - hold_secs, 0):.0f}s"
                 signals.append({
-                    "name": "Profit Lock",
-                    "icon": "🔒",
-                    "threshold": f"Floor +{p_lock*100:.1f}%",
-                    "current": f"PnL={pnl_pct*100:.2f}%",
-                    "progress": lock_progress,
-                    "triggered": lock_active and pnl_pct <= p_lock,
-                    "detail": f"{'Activo' if lock_active else 'Inactivo'} — cierra si PnL ≤ +{p_lock*100:.1f}%",
+                    "name": "MFE @4min",
+                    "icon": "📸",
+                    "threshold": "4min (240s)",
+                    "current": f"MFE={mfe*100:.3f}%",
+                    "progress": snap_progress,
+                    "triggered": snapshot_taken,
+                    "detail": snap_detail,
                 })
 
-            # 11. Early Abort (MAX scheme)
-            ea_hours = ea_hours_aeps if ea_hours_aeps is not None else vparams.get("early_abort_hours", 0)
-            ea_mfe = ea_mfe_aeps if ea_mfe_aeps is not None else vparams.get("early_abort_max_mfe", 0)
-            ea_loss = ea_loss_aeps if ea_loss_aeps is not None else vparams.get("early_abort_max_loss", 0)
-            if ea_hours > 0:
-                ea_time_pct = min(hold_hours / ea_hours * 100, 100)
-                ea_conds = [hold_hours > ea_hours, mfe < ea_mfe, pnl_pct < ea_loss]
-                ea_met = sum(ea_conds)
+                # 3. Timer exit
+                if snapshot_taken and mfe_snapshot >= 0.008:
+                    timer_target = 600
+                    timer_label = "exit_10min"
+                else:
+                    timer_target = 300
+                    timer_label = "exit_5min"
+                timer_progress = min(hold_secs / timer_target * 100, 100)
+                timer_remaining = max(timer_target - hold_secs, 0)
                 signals.append({
-                    "name": "Early Abort",
+                    "name": f"Timer ({timer_label})",
                     "icon": "⏱️",
-                    "threshold": f">{ea_hours:.0f}h & MFE<{ea_mfe*100:.1f}% & PnL<{ea_loss*100:.1f}%",
-                    "current": f"{ea_met}/3 condiciones",
-                    "progress": ea_met / 3 * 100,
-                    "triggered": all(ea_conds),
-                    "detail": f"hold={'✓' if ea_conds[0] else '✗'} MFE={'✓' if ea_conds[1] else '✗'} PnL={'✓' if ea_conds[2] else '✗'}",
+                    "threshold": f"{timer_target}s ({timer_target//60}min)",
+                    "current": f"{hold_secs:.0f}s",
+                    "progress": timer_progress,
+                    "triggered": hold_secs >= timer_target,
+                    "detail": f"Faltan {timer_remaining:.0f}s" if timer_remaining > 0 else "¡Cierre!",
                 })
+
+            else:
+                # ══════════════════════════════════════════════════════
+                #  Non-base variants: AEPS adaptive signals (unchanged)
+                # ══════════════════════════════════════════════════════
+
+                # 1. Stop Loss
+                sl_distance = (-pnl_pct - sl_pct) / sl_pct  # negative = still safe
+                sl_price = entry_price * (1 + sl_pct)
+                signals.append({
+                    "name": "Stop Loss",
+                    "icon": "🛑",
+                    "threshold": f"-{sl_pct*100:.1f}%",
+                    "current": f"{pnl_pct*100:+.2f}%",
+                    "progress": min(max(-pnl_pct / sl_pct * 100, 0), 100),
+                    "triggered": pnl_pct <= -sl_pct,
+                    "detail": f"SL @ ${sl_price:.6g} (mark ${mark_price:.6g})",
+                })
+
+                # 2. Take Profit
+                tp_price = entry_price * (1 - tp_pct)
+                signals.append({
+                    "name": "Take Profit",
+                    "icon": "🎯",
+                    "threshold": f"+{tp_pct*100:.1f}%",
+                    "current": f"{pnl_pct*100:+.2f}%",
+                    "progress": min(max(pnl_pct / tp_pct * 100, 0), 100),
+                    "triggered": pnl_pct >= tp_pct,
+                    "detail": f"TP @ ${tp_price:.6g} (mark ${mark_price:.6g})",
+                })
+
+                # 3. Trailing continuo con floor dinámico
+                trail_floor = None
+                if breakeven_trig > 0 and mfe >= breakeven_trig:
+                    if trail_act > 0 and mfe >= trail_act:
+                        trail_floor = mfe * (1.0 - trail_cb)
+                    else:
+                        range_width = max(trail_act - breakeven_trig, 0.001)
+                        progress_ramp = min((mfe - breakeven_trig) / range_width, 1.0)
+                        max_floor = mfe * (1.0 - trail_cb)
+                        trail_floor = progress_ramp * max_floor
+                elif trail_act > 0 and mfe >= trail_act:
+                    trail_floor = mfe * (1.0 - trail_cb)
+
+                trail_active = trail_floor is not None
+                trail_progress = 0
+                if breakeven_trig > 0:
+                    trail_progress = min(mfe / breakeven_trig * 100, 100)
+                elif trail_act > 0:
+                    trail_progress = min(mfe / trail_act * 100, 100)
+
+                signals.append({
+                    "name": "Trailing Stop",
+                    "icon": "📐",
+                    "threshold": f"BE≥{breakeven_trig*100:.1f}% → trail → {trail_act*100:.1f}%",
+                    "current": f"MFE={mfe*100:.2f}%",
+                    "progress": trail_progress,
+                    "triggered": trail_active and pnl_pct < trail_floor,
+                    "detail": f"Floor={trail_floor*100:.2f}%, PnL={pnl_pct*100:.2f}%" if trail_active else f"Inactivo (MFE < {breakeven_trig*100:.1f}%)",
+                })
+
+                # 5. Max Hold
+                signals.append({
+                    "name": "Max Hold Time",
+                    "icon": "⏰",
+                    "threshold": f"{max_hold}h",
+                    "current": f"{hold_hours:.1f}h",
+                    "progress": min(hold_hours / max_hold * 100, 100),
+                    "triggered": hold_hours >= max_hold,
+                    "detail": f"Faltan {max(max_hold - hold_hours, 0):.1f}h",
+                })
+
+                # 6. OI Abort
+                signals.append({
+                    "name": "OI Abort",
+                    "icon": "📊",
+                    "threshold": f"ΔOI>{oi_abort_pct*100:.0f}%",
+                    "current": f"ΔOI={oi_change*100:+.2f}%",
+                    "progress": min(max(oi_change / oi_abort_pct * 100, 0), 100) if oi_abort_pct > 0 else 0,
+                    "triggered": oi_change > oi_abort_pct,
+                    "detail": f"OI entry={entry_oi:,.0f} → now={current_oi:,.0f}",
+                })
+
+                # 7. Pump Capture
+                half_pump = 0.5 * abs(price_change_24h) if abs(price_change_24h) > 0 else 0.01
+                pc_progress = min(mfe / half_pump * 100, 100) if half_pump > 0 else 0
+                signals.append({
+                    "name": "Pump Capture",
+                    "icon": "🚀",
+                    "threshold": f"MFE≥½|ΔP24h| ({half_pump*100:.2f}%)",
+                    "current": f"MFE={mfe*100:.2f}%, Ê≥2",
+                    "progress": pc_progress,
+                    "triggered": False,  # computed in strategy with live exhaustion
+                    "detail": f"ΔP24h={price_change_24h*100:+.1f}%",
+                })
+
+                # 8. Reversal Signal
+                rev_conditions = [
+                    hold_hours >= min_hold,
+                    pnl_pct > 0.01,
+                    oi_change_1h > 0,
+                    taker_buy_ratio > 0.55,
+                ]
+                rev_met = sum(rev_conditions)
+                signals.append({
+                    "name": "Reversal Signal",
+                    "icon": "🔄",
+                    "threshold": "hold≥min & PnL>1% & dOI₁ₕ>0 & η_buy>55%",
+                    "current": f"{rev_met}/4 condiciones",
+                    "progress": rev_met / 4 * 100,
+                    "triggered": all(rev_conditions),
+                    "detail": f"hold={'✓' if rev_conditions[0] else '✗'} PnL={'✓' if rev_conditions[1] else '✗'} dOI={'✓' if rev_conditions[2] else '✗'} η={'✓' if rev_conditions[3] else '✗'}",
+                })
+
+                # 9. Partial TP (MAX scheme)
+                pt_mfe = pt_mfe_aeps if pt_mfe_aeps is not None else vparams.get("partial_tp_mfe_pct", 0)
+                pt_frac = pt_frac_aeps if pt_frac_aeps is not None else vparams.get("partial_tp_fraction", 0)
+                if pt_mfe > 0:
+                    pt_progress = min(mfe / pt_mfe * 100, 100)
+                    signals.append({
+                        "name": "Partial TP",
+                        "icon": "✂️",
+                        "threshold": f"{pt_frac*100:.0f}% @ MFE≥{pt_mfe*100:.1f}%",
+                        "current": f"MFE={mfe*100:.2f}%",
+                        "progress": pt_progress,
+                        "triggered": mfe >= pt_mfe,
+                        "detail": f"Cierra {pt_frac*100:.0f}% cuando MFE alcance {pt_mfe*100:.1f}%",
+                    })
+
+                # 10. Profit Lock (post partial TP)
+                p_lock = p_lock_aeps if p_lock_aeps is not None else vparams.get("profit_lock_pct", 0)
+                if p_lock > 0 and pt_mfe > 0:
+                    lock_active = mfe >= pt_mfe  # partial TP already triggered
+                    if lock_active:
+                        lock_progress = min(max((p_lock - pnl_pct) / p_lock * 100, 0), 100) if p_lock > 0 else 0
+                    else:
+                        lock_progress = 0
+                    signals.append({
+                        "name": "Profit Lock",
+                        "icon": "🔒",
+                        "threshold": f"Floor +{p_lock*100:.1f}%",
+                        "current": f"PnL={pnl_pct*100:.2f}%",
+                        "progress": lock_progress,
+                        "triggered": lock_active and pnl_pct <= p_lock,
+                        "detail": f"{'Activo' if lock_active else 'Inactivo'} — cierra si PnL ≤ +{p_lock*100:.1f}%",
+                    })
+
+                # 11. Early Abort (MAX scheme)
+                ea_hours = ea_hours_aeps if ea_hours_aeps is not None else vparams.get("early_abort_hours", 0)
+                ea_mfe = ea_mfe_aeps if ea_mfe_aeps is not None else vparams.get("early_abort_max_mfe", 0)
+                ea_loss = ea_loss_aeps if ea_loss_aeps is not None else vparams.get("early_abort_max_loss", 0)
+                if ea_hours > 0:
+                    ea_time_pct = min(hold_hours / ea_hours * 100, 100)
+                    ea_conds = [hold_hours > ea_hours, mfe < ea_mfe, pnl_pct < ea_loss]
+                    ea_met = sum(ea_conds)
+                    signals.append({
+                        "name": "Early Abort",
+                        "icon": "⏱️",
+                        "threshold": f">{ea_hours:.0f}h & MFE<{ea_mfe*100:.1f}% & PnL<{ea_loss*100:.1f}%",
+                        "current": f"{ea_met}/3 condiciones",
+                        "progress": ea_met / 3 * 100,
+                        "triggered": all(ea_conds),
+                        "detail": f"hold={'✓' if ea_conds[0] else '✗'} MFE={'✓' if ea_conds[1] else '✗'} PnL={'✓' if ea_conds[2] else '✗'}",
+                    })
 
             results.append({
                 "trade_id": t["id"],
