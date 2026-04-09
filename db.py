@@ -393,15 +393,26 @@ class AsyncDBWriter:
             )
 
     async def update_open_trade_mfe(self, trade_id: int, mfe: float, mae: float,
-                                    funding_collected: float = 0.0):
+                                    funding_collected: float = 0.0,
+                                    mfe_2min_snapshot: float | None = None):
         """Persiste MFE/MAE y funding de un trade abierto."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE virtual_trades SET mfe_pct=$1, mae_pct=$2, "
-                "funding_collected=$3 "
-                "WHERE id=$4 AND status='open'",
-                mfe, mae, funding_collected, trade_id,
-            )
+            if mfe_2min_snapshot is not None:
+                await conn.execute(
+                    "UPDATE virtual_trades SET mfe_pct=$1, mae_pct=$2, "
+                    "funding_collected=$3, "
+                    "entry_snapshot = entry_snapshot || $5::jsonb "
+                    "WHERE id=$4 AND status='open'",
+                    mfe, mae, funding_collected, trade_id,
+                    json.dumps({"mfe_2min_snapshot": mfe_2min_snapshot}),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE virtual_trades SET mfe_pct=$1, mae_pct=$2, "
+                    "funding_collected=$3 "
+                    "WHERE id=$4 AND status='open'",
+                    mfe, mae, funding_collected, trade_id,
+                )
 
     async def get_open_trades(self) -> list[dict]:
         """Retorna todos los trades abiertos para recovery."""

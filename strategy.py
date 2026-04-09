@@ -99,7 +99,8 @@ class VariantTradeState:
     original_qty: float = 0.0   # qty antes del cierre parcial
     partial_tp_pnl_usd: float = 0.0  # PnL realizado del TP parcial
     zombie_checked: bool = False  # True después de evaluar zombie_kill (una sola vez)
-    mfe_2min_snapshot: Optional[float] = None  # MFE snapshot at 2min mark (base simplified exit)
+    mfe_2min_snapshot: Optional[float] = None  # MFE snapshot at 4min mark (base simplified exit)
+    mfe_2min_snapshot_dirty: bool = False       # needs DB persist
 
 
 class SymbolState:
@@ -1213,18 +1214,7 @@ class StrategyEngine:
             # 2. MFE snapshot at 4-min mark
             if vtrade.mfe_2min_snapshot is None and hold_secs >= 240:
                 vtrade.mfe_2min_snapshot = vtrade.mfe
-                # Persist snapshot to DB (entry_snapshot JSONB)
-                try:
-                    async with self.writer._pool.acquire(timeout=5) as conn:
-                        await conn.execute(
-                            "UPDATE virtual_trades "
-                            "SET entry_snapshot = entry_snapshot || $1::jsonb "
-                            "WHERE id = $2",
-                            json.dumps({"mfe_2min_snapshot": vtrade.mfe_2min_snapshot}),
-                            vtrade.open_trade_id,
-                        )
-                except Exception as e:
-                    log.warning(f"mfe_2min_snapshot persist error #{vtrade.open_trade_id}: {e}")
+                vtrade.mfe_2min_snapshot_dirty = True  # mark for batch persist
 
             # 3. Timer exit based on snapshot
             if not exit_reason and vtrade.mfe_2min_snapshot is not None:
@@ -1945,10 +1935,16 @@ class StrategyEngine:
             for sym, vtrade in self.variant_trades[vname].items():
                 if vtrade.open_trade_id is not None and vtrade.entry_price > 0:
                     try:
+                        snapshot_val = None
+                        if getattr(vtrade, 'mfe_2min_snapshot_dirty', False):
+                            snapshot_val = vtrade.mfe_2min_snapshot
                         await self.writer.update_open_trade_mfe(
                             vtrade.open_trade_id, vtrade.mfe, vtrade.mae,
                             vtrade.funding_collected,
+                            mfe_2min_snapshot=snapshot_val,
                         )
+                        if snapshot_val is not None:
+                            vtrade.mfe_2min_snapshot_dirty = False
                     except Exception as e:
                         log.debug(f"MFE persist error #{vtrade.open_trade_id}: {e}")
 
