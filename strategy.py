@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -845,6 +846,8 @@ class StrategyEngine:
         Evalúa entrada/salida para todos los símbolos × todas las variantes.
         El mercado se computa una sola vez por símbolo.
         """
+        t0 = time.time()
+
         # Hot-reload de trading_config.json
         await self._check_config_reload(now)
 
@@ -886,6 +889,10 @@ class StrategyEngine:
                     if self.halted[entry_mode][vname]:
                         continue
                     await self._evaluate_entry(state, vtrade, vname, vparams, now)
+
+        elapsed = time.time() - t0
+        if elapsed > 30:
+            log.warning(f"evaluate_all took {elapsed:.1f}s (>30s)")
 
     # ══════════════════════════════════════════════════════════════
     #  ENTRADA
@@ -1407,11 +1414,20 @@ class StrategyEngine:
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
 
-            # Rebuild surface from all closed aggressive (v5) trades
-            try:
-                await self._rebuild_v5_surface()
-            except Exception as e:
-                log.warning(f"v5 surface rebuild failed: {e}")
+            # Rebuild surface from all closed aggressive (v5) trades (background)
+            asyncio.ensure_future(self._rebuild_v5_surface_safe())
+
+    async def _rebuild_v5_surface_safe(self):
+        """Non-blocking wrapper for v5 surface rebuild."""
+        if getattr(self, '_v5_rebuild_running', False):
+            return
+        self._v5_rebuild_running = True
+        try:
+            await self._rebuild_v5_surface()
+        except Exception as e:
+            log.warning(f"v5 surface rebuild failed: {e}")
+        finally:
+            self._v5_rebuild_running = False
 
     async def _rebuild_v5_surface(self):
         """Rebuild P(win) surface after an aggressive trade closes.
