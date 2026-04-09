@@ -1215,7 +1215,7 @@ class StrategyEngine:
                 vtrade.mfe_2min_snapshot = vtrade.mfe
                 # Persist snapshot to DB (entry_snapshot JSONB)
                 try:
-                    async with self.writer._pool.acquire() as conn:
+                    async with self.writer._pool.acquire(timeout=5) as conn:
                         await conn.execute(
                             "UPDATE virtual_trades "
                             "SET entry_snapshot = entry_snapshot || $1::jsonb "
@@ -1224,7 +1224,7 @@ class StrategyEngine:
                             vtrade.open_trade_id,
                         )
                 except Exception as e:
-                    log.debug(f"mfe_2min_snapshot persist error #{vtrade.open_trade_id}: {e}")
+                    log.warning(f"mfe_2min_snapshot persist error #{vtrade.open_trade_id}: {e}")
 
             # 3. Timer exit based on snapshot
             if not exit_reason and vtrade.mfe_2min_snapshot is not None:
@@ -1833,6 +1833,10 @@ class StrategyEngine:
             # OI de entrada del snapshot
             snap = json.loads(t.get("entry_snapshot", "{}") or "{}")
             vtrade.entry_oi = snap.get("oi_value", 0.0) or 0.0
+            # Restaurar mfe_2min_snapshot para base simplified exit
+            raw_snap = snap.get("mfe_2min_snapshot")
+            if raw_snap is not None:
+                vtrade.mfe_2min_snapshot = float(raw_snap)
             # Restaurar live_qty desde Binance si es trade live
             if vtrade.trade_mode == "live" and self.trader:
                 try:
