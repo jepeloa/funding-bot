@@ -1,0 +1,343 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{listings}
+
+\geometry{margin=2.5cm}
+
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{codebg}{RGB}{245,245,240}
+
+\tcbset{
+  formula/.style={colback=cblue!5,colframe=cblue!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  step/.style={colback=cgreen!5,colframe=cgreen!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  warn/.style={colback=cred!5,colframe=cred!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  decision/.style={colback=corange!5,colframe=corange!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  key/.style={colback=cpurple!5,colframe=cpurple!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{gray!50},
+  keywordstyle=\color{cblue}\bfseries,
+  commentstyle=\color{cgreen!70!black}\itshape,
+  stringstyle=\color{cred!80!black},
+  numbers=none,
+  breaklines=true,
+  showstringspaces=false,
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+}
+
+\newcommand{\pw}{P_W}
+\newcommand{\E}{\mathbb{E}}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries Manual Operativo}\\[4pt]
+{\LARGE\bfseries Test de Bimodalidad + Sistema de Salida Shannon}\\[16pt]
+{\large Javier Epeloa\quad$\cdot$\quad Abril 2026}\\[4pt]
+{\small\itshape Todas las f\'ormulas, paso a paso, con c\'odigo}
+\end{center}
+
+\vspace{12pt}
+\tableofcontents
+\newpage
+
+\part{Test de Bimodalidad}
+
+\section{Qu\'e es y para qu\'e sirve}
+
+El test de bimodalidad responde una pregunta binaria: \textbf{la distribuci\'on de MFE de mis trades tiene una joroba o dos?} Si tiene dos (bimodal), los winners y losers son poblaciones distintas y Shannon puede separarlos. Si tiene una (unimodal), no hay estructura explotable. Es el criterio de falsificaci\'on del framework.
+
+\section{Datos necesarios}
+
+Array de MFE de al menos 50 trades ejecutados con horizonte fijo (sin gesti\'on de salida).
+
+\begin{tcolorbox}[formula, title=Definici\'on de MFE]
+Para un trade SHORT abierto al precio $P_{\text{entry}}$:
+\begin{equation}
+\text{MFE} = \max_{s \in [t_{\text{entry}},\; t_{\text{exit}}]} \frac{P_{\text{entry}} - P_{\text{low}}(s)}{P_{\text{entry}}}
+\end{equation}
+Es el m\'aximo retorno favorable que el trade alcanz\'o en alg\'un momento antes del cierre.
+\end{tcolorbox}
+
+\section{Paso A: Ajustar dos modelos}
+
+\subsection{Modelo 1: Una Gaussiana}
+
+Todos los MFE vienen de una sola distribuci\'on normal:
+\begin{equation}
+f_1(x) = \frac{1}{\sigma\sqrt{2\pi}} \exp\!\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)
+\end{equation}
+Par\'ametros: $\theta_1 = (\mu, \sigma)$. Cantidad: $k_1 = 2$.
+
+\subsection{Modelo 2: Mezcla de dos Gaussianas}
+
+Los MFE vienen de dos poblaciones mezcladas:
+\begin{equation}
+f_2(x) = \pi_1 \cdot \mathcal{N}(x;\, \mu_1, \sigma_1^2) + (1-\pi_1) \cdot \mathcal{N}(x;\, \mu_2, \sigma_2^2)
+\end{equation}
+Par\'ametros: $\theta_2 = (\pi_1, \mu_1, \sigma_1, \mu_2, \sigma_2)$. Cantidad: $k_2 = 5$.
+
+\subsection{Ajuste por EM (Expectation-Maximization)}
+
+\textbf{Paso E:} Para cada dato $x_i$, calcular la probabilidad de que pertenezca a cada campana:
+\begin{equation}
+\gamma_{i,j} = \frac{\pi_j \cdot \mathcal{N}(x_i;\, \mu_j, \sigma_j^2)}{\sum_{l=1}^{2} \pi_l \cdot \mathcal{N}(x_i;\, \mu_l, \sigma_l^2)}
+\end{equation}
+
+\textbf{Paso M:} Actualizar par\'ametros:
+\begin{align}
+\pi_j &= \frac{1}{n}\sum_{i=1}^{n} \gamma_{i,j}, \qquad
+\mu_j = \frac{\sum_i \gamma_{i,j} x_i}{\sum_i \gamma_{i,j}}, \qquad
+\sigma_j^2 = \frac{\sum_i \gamma_{i,j}(x_i - \mu_j)^2}{\sum_i \gamma_{i,j}}
+\end{align}
+Repetir E y M hasta convergencia.
+
+\section{Paso B: Calcular $\Delta$BIC}
+
+\begin{tcolorbox}[formula, title=BIC y $\Delta$BIC]
+\begin{equation}
+\text{BIC} = -2\ln\hat{L} + k\ln n
+\end{equation}
+donde $\hat{L} = \prod_{i=1}^n f(x_i;\hat\theta)$ es la verosimilitud maximizada, $k$ el n\'umero de par\'ametros, $n$ los trades.
+\begin{equation}
+\boxed{\Delta\text{BIC} = \text{BIC}_1 - \text{BIC}_2}
+\end{equation}
+\end{tcolorbox}
+
+\begin{tcolorbox}[decision, title=Escala de interpretaci\'on (Kass-Raftery 1995)]
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{ccl}
+$\Delta$\textbf{BIC} & \textbf{Evidencia} & \textbf{Acci\'on} \\
+\midrule
+$< 2$ & Insignificante & \textbf{Descartar} la se\~nal \\
+$2$--$6$ & Positiva & Seguir acumulando datos \\
+$6$--$10$ & Fuerte & Prometedor \\
+$> 10$ & Muy fuerte & \textbf{Hay estaci\'on} $\to$ avanzar \\
+\end{tabular}
+\end{tcolorbox}
+
+\begin{lstlisting}
+from sklearn.mixture import GaussianMixture
+import numpy as np
+
+def test_bimodality(mfes):
+    X = np.array(mfes).reshape(-1, 1)
+    gm1 = GaussianMixture(n_components=1, random_state=42).fit(X)
+    gm2 = GaussianMixture(n_components=2, random_state=42).fit(X)
+    delta_bic = gm1.bic(X) - gm2.bic(X)
+    return delta_bic  # > 10 = bimodal
+\end{lstlisting}
+
+\section{Paso C: Test KS de separaci\'on}
+
+Confirmar que las dos campanas corresponden a winners y losers:
+
+\begin{tcolorbox}[formula, title=Test Kolmogorov-Smirnov]
+\begin{equation}
+D = \sup_x |F_W(x) - F_L(x)|
+\end{equation}
+$F_W$ y $F_L$: CDFs emp\'iricas de MFE de winners y losers. Si $p < 0.05$: las distribuciones son significativamente diferentes.
+\end{tcolorbox}
+
+\begin{lstlisting}
+from scipy import stats
+mfe_w = mfes[outcomes == 1]
+mfe_l = mfes[outcomes == 0]
+ks_stat, ks_p = stats.ks_2samp(mfe_w, mfe_l)
+# ks_p < 0.05 = separable
+\end{lstlisting}
+
+\begin{tcolorbox}[warn, title=Ambas condiciones son necesarias]
+\textbf{Hay estaci\'on} si y solo si:
+\begin{itemize}[leftmargin=1.5em]
+\item $\Delta$BIC $> 10$ (hay dos campanas en MFE)
+\item KS $p < 0.05$ (las campanas separan winners de losers)
+\end{itemize}
+\end{tcolorbox}
+
+\newpage
+\part{Sistema de Salida Shannon-VOI}
+
+\section{Construcci\'on de la Superficie $\pw$}
+
+\subsection{Discretizar el espacio}
+
+Grilla 2D $(t_i, \text{MFE}_j)$:
+\begin{itemize}[leftmargin=1.5em]
+\item Eje temporal: $\{0.5, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60\}$ minutos
+\item Eje MFE: $\{0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0\}$\%
+\end{itemize}
+
+\subsection{Contar por celda}
+
+Para cada trade, recorrer su path. En cada punto, encontrar la celda m\'as cercana e incrementar $\alpha$ (si winner) o $\beta$ (si loser).
+
+\begin{tcolorbox}[formula, title=Estimador por celda]
+\begin{equation}
+\boxed{\pw(t_i, \text{MFE}_j) = \frac{\alpha_{i,j}}{\alpha_{i,j} + \beta_{i,j}}}
+\end{equation}
+\end{tcolorbox}
+
+\section{F\'ormulas de Shannon}
+
+\begin{tcolorbox}[formula, title=Todas las f\'ormulas necesarias]
+
+\textbf{Entrop\'ia binaria:}
+\begin{equation}
+H(p) = -p\log_2 p - (1-p)\log_2(1-p)
+\end{equation}
+
+\textbf{Entrop\'ia a priori:}
+\begin{equation}
+H(O) = H(\pi_W) \qquad \text{donde } \pi_W = \text{win rate hist\'orico}
+\end{equation}
+
+\textbf{Informaci\'on acumulada en tiempo $t$:}
+\begin{equation}
+I(t) = H(O) - H\bigl(\pw(t)\bigr)
+\end{equation}
+
+\textbf{Tasa de informaci\'on:}
+\begin{equation}
+\frac{dI}{dt} = \frac{I(t) - I(t - \delta t)}{\delta t} \qquad \text{(bits/min)}
+\end{equation}
+
+\textbf{EV de continuar:}
+\begin{equation}
+\text{EV}_{\text{cont}} = \pw(t) \cdot \E[\text{PnL}|W] + (1 - \pw(t)) \cdot \E[\text{PnL}|L]
+\end{equation}
+
+\textbf{Interpolaci\'on bilineal:}
+\begin{equation}
+\pw = p_{00}(1{-}\delta_m)(1{-}\delta_t) + p_{01}\,\delta_m(1{-}\delta_t) + p_{10}(1{-}\delta_m)\delta_t + p_{11}\,\delta_m\,\delta_t
+\end{equation}
+con $\delta_t = (t - t_0)/(t_1 - t_0)$, $\delta_m = (m - m_0)/(m_1 - m_0)$.
+
+\end{tcolorbox}
+
+\section{Reglas de Decisi\'on}
+
+\begin{tcolorbox}[decision, title=Las cuatro reglas (evaluadas en este orden)]
+
+\textbf{R0 --- Stop Loss Duro:}
+$\text{MAE} \geq 8\% \;\Longrightarrow\; \textbf{CERRAR}$
+
+\medskip
+\textbf{R1 --- Shannon EXIT:}
+$t > 60\text{s}$ AND $\pw < 0.50$ AND $|dI/dt| < 0.005 \;\Longrightarrow\; \textbf{CERRAR}$
+
+\medskip
+\textbf{R1b --- EV EXIT:}
+$t > 60\text{s}$ AND $\text{EV}_{\text{cont}} < \text{PnL}$ AND $\pw < 0.45 \;\Longrightarrow\; \textbf{CERRAR}$
+
+\medskip
+\textbf{R2 --- Shannon TRAIL:}
+$t > 60\text{s}$ AND $\pw > 0.70$ AND $|dI/dt| < 0.005 \;\Longrightarrow\; \textbf{TRAILING}$
+
+\medskip
+\textbf{Default:} HOLD (seguir observando).
+\end{tcolorbox}
+
+\section{Trailing Adaptativo}
+
+\begin{tcolorbox}[formula, title=Callback como funci\'on de $\pw$]
+\begin{equation}
+\boxed{\text{cb}(\pw) = \text{clamp}\bigl(0.30 + 0.833 \cdot (\pw - 0.70),\;\; 0.25,\;\; 0.55\bigr)}
+\end{equation}
+
+Al activar: $\text{peak} \leftarrow \text{PnL}$, $\text{cb} \leftarrow \text{cb}(\pw)$.
+
+En cada tick: si PnL $>$ peak, actualizar peak y cb. Calcular $\text{floor} = \text{peak} \times (1 - \text{cb})$. Si PnL $<$ floor y peak $> 0.5\%$: CERRAR.
+\end{tcolorbox}
+
+\section{Actualizaci\'on Online}
+
+\subsection{Prior $\pi_W$ (Beta-Binomial)}
+
+\begin{tcolorbox}[formula, title=Filtro Beta-Binomial con decay]
+Inicializar: $\alpha_0 = \pi_W \times 20$, $\beta_0 = (1-\pi_W) \times 20$.
+
+Despu\'es de cada trade ($\lambda = 0.97$):
+\begin{align}
+\text{Win:}\quad \alpha &\leftarrow \lambda\alpha + 1, \quad \beta \leftarrow \lambda\beta \\
+\text{Loss:}\quad \alpha &\leftarrow \lambda\alpha, \quad \beta \leftarrow \lambda\beta + 1
+\end{align}
+$\hat{\pi}_W = \alpha / (\alpha + \beta)$. Half-life $\approx 23$ trades.
+\end{tcolorbox}
+
+\subsection{Superficie (incremental por trade)}
+
+Despu\'es de cada trade cerrado, para cada punto de su path:
+\begin{align}
+\text{Win:}\quad \alpha_{i,j} &\leftarrow \lambda\alpha_{i,j} + 1, \quad \beta_{i,j} \leftarrow \lambda\beta_{i,j} \\
+\text{Loss:}\quad \alpha_{i,j} &\leftarrow \lambda\alpha_{i,j}, \quad \beta_{i,j} \leftarrow \lambda\beta_{i,j} + 1
+\end{align}
+Recalcular $\pw(t_i, m_j) = \alpha_{i,j} / (\alpha_{i,j} + \beta_{i,j})$.
+
+\section{Flujo Completo por Tick}
+
+\begin{tcolorbox}[key, title=Pseudoc\'odigo]
+\begin{verbatim}
+TICK(t, pnl, mfe, mae):
+  mfe_cum = max(mfe_cum, mfe)
+  pw = interpolar(t/60, mfe_cum * 100)
+  I  = H(pi_W) - H(pw)
+  dI = (I - I_prev) / dt_min
+  ev = pw * E[W] + (1-pw) * E[L]
+
+  if mae >= 0.08:           return CERRAR
+  if trailing_activo:
+    if pnl > peak:  peak=pnl, cb=callback(pw)
+    if pnl < peak*(1-cb):   return CERRAR
+  if t > 60s:
+    if pw < 0.50 and |dI| < eps:     return CERRAR
+    if ev < pnl and pw < 0.45:       return CERRAR
+    if pw > 0.70 and |dI| < eps:     ACTIVAR trailing
+  return HOLD
+
+  I_prev = I
+\end{verbatim}
+\end{tcolorbox}
+
+\section{Cheat Sheet}
+
+\begin{tcolorbox}[key, title=Resumen de par\'ametros]
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{llll}
+\toprule
+\textbf{Par\'ametro} & \textbf{Valor} & \textbf{Tipo} & \textbf{Origen} \\
+\midrule
+exit\_pw & 0.50 & Derivado & EV $= 0$ por definici\'on \\
+\textbf{trail\_pw} & \textbf{0.70} & \textbf{Libre} & \textbf{\'Unico calibrable} \\
+min\_observe & 60s & Emp\'irico & Primer KS significativo \\
+hard\_sl & 8\% & Protecci\'on & Seguro de capital \\
+$\varepsilon$ & 0.005 bits/min & Emp\'irico & Ruido base \\
+$\lambda$ & 0.97 & Convenci\'on & Half-life 23 trades \\
+\bottomrule
+\end{tabular}
+\end{tcolorbox}
+
+\end{document}

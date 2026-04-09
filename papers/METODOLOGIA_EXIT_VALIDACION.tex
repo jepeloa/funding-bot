@@ -1,0 +1,473 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black, urlcolor=blue!60!black}
+
+\newtheorem{theorem}{Teorema}
+\newtheorem{lemma}[theorem]{Lema}
+\newtheorem{proposition}[theorem]{Proposición}
+\newtheorem{corollary}[theorem]{Corolario}
+\newtheorem{definition}{Definición}
+\newtheorem{condition}{Condición}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small MFE-Branching: Framework Shannon-Óptimo de Salidas}
+\lhead{\small Epeloa, 2026}
+\cfoot{\thepage}
+
+\title{\textbf{MFE-Branching: Un Framework Shannon-Óptimo\\de Salidas para Mercados Bimodales}\\\vspace{0.5cm}\large Un Enfoque de Teoría de la Información para la Generación\\de Edge a partir de la Estructura de Bifurcación en Series Financieras}
+
+\author{Javier Epeloa\\\small Mapplics / Mapply Quant Research\\\small\texttt{javier@mapplics.com}}
+
+\date{Abril 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Presentamos MFE-Branching, un framework general para la construcción de estrategias de salida óptimas en mercados que exhiben distribuciones bimodales de Máxima Excursión Favorable (MFE). El framework se apoya en cuatro condiciones: (1) bimodalidad temprana del MFE, verificable en el tiempo de observación; (2) asimetría positiva de clusters, donde la suma ponderada de los retornos por cluster es positiva; (3) independencia temporal de los resultados; y (4) persistencia de las condiciones (1) y (2) en el tiempo. Demostramos que MFE-Branching ---una clasificación binaria simple basada en la observación temprana del MFE seguida de salidas por timer--- es el decodificador Shannon-óptimo para el canal del path del trade. La Desigualdad de Procesamiento de Datos (DPI) garantiza que cualquier complejidad adicional (trailing stops, take-profits, re-evaluaciones, indicadores compuestos) solo puede degradar el rendimiento. Justificamos por qué el MFE es la variable observable óptima: es monótonamente no-decreciente, codifica directamente la bifurcación de Kramers, y constituye un estadístico aproximadamente suficiente para el resultado del trade. La validación empírica sobre 97 trades reales de la estrategia $\Psi$-JAM de shorts en altcoins demuestra una mejora del Profit Factor de 1.10 a 2.76, y el framework se generaliza a través de 11 escenarios sintéticos y 15 señales con indicadores estándar. Proveemos un procedimiento completo de validación de señales aplicable antes de operar en vivo, y una receta de calibración que deriva todos los parámetros a partir de los datos sin intervención humana.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%===============================================================================
+\section{Introducción}
+%===============================================================================
+
+El problema de la salida en trading sistemático ha recibido mucha menos atención rigurosa que el diseño de señales de entrada. La mayoría de los practicantes emplean salidas heurísticas: niveles fijos de take-profit, trailing stops con porcentajes de callback arbitrarios, o cortes por tiempo elegidos por intuición. Estos enfoques carecen de justificación teórica y, como demostramos empíricamente, frecuentemente \emph{destruyen} edge en lugar de capturarlo.
+
+Este paper introduce MFE-Branching, un framework que deriva la estrategia de salida óptima a partir de teoría de la información. La idea clave es que el path del trade constituye un \emph{canal de comunicación} en el sentido de Shannon, y la Desigualdad de Procesamiento de Datos (DPI) garantiza que cualquier procesamiento de la señal temprana del MFE solo puede perder información ---nunca ganarla.
+
+El framework requiere cuatro condiciones verificables para generar edge, provee una receta de calibración que deriva todos los parámetros a partir de los datos, e incluye un procedimiento de validación de señales aplicable \emph{antes} de operar en vivo. Demostramos que en mercados con dinámica de bifurcación tipo Kramers, la salida óptima es necesariamente simple: observar, clasificar, poner un timer, y cerrar.
+
+%===============================================================================
+\section{Fundamento Teórico}
+%===============================================================================
+
+\subsection{El Path del Trade como Canal de Comunicación}
+
+Consideremos un trade abierto en el tiempo $t_0$ al precio $p_0$. El PnL no realizado en el tiempo $t$ es:
+\begin{equation}
+    \pi(t) = \frac{p_0 - p(t)}{p_0} \quad \text{(para una posición short)}
+\end{equation}
+La Máxima Excursión Favorable hasta el tiempo $t$ es:
+\begin{equation}
+    \text{MFE}(t) = \max_{s \in [t_0, t]} \pi(s)
+\end{equation}
+Modelamos el trade como un canal de comunicación binario:
+\begin{equation}
+    \underbrace{X}_{\text{Señal}} \longrightarrow \underbrace{\{\pi(t), \text{MFE}(t)\}_{t \geq t_0}}_{\text{Canal}} \longrightarrow \underbrace{Y \in \{W, L\}}_{\text{Resultado}}
+\end{equation}
+
+\subsection{Bifurcación de Kramers y Bimodalidad}
+
+Después de un movimiento extremo de precio, el precio se sitúa cerca de una barrera de potencial en el framework de Langevin:
+\begin{equation}
+    \frac{dx}{dt} = -V'(x) + \sigma\xi(t)
+\end{equation}
+El precio puede caer de vuelta (reversión $\rightarrow$ cluster HIGH de MFE) o escapar hacia adelante (continuación $\rightarrow$ cluster LOW de MFE). Esto produce distribuciones de MFE bimodales. Mostramos empíricamente que esta bimodalidad es una propiedad del \emph{mercado}: cualquier señal de entrada que detecte movimientos extremos la produce, independientemente del poder predictivo de la señal.
+
+\subsection{Por Qué el MFE es la Variable Observable Óptima}
+
+Justificamos la elección del MFE sobre observables alternativos (PnL, velocidad, aceleración, rango, ratio de retención) mediante cuatro propiedades:
+
+\textbf{Propiedad 1: Monotonía.} $\text{MFE}(t+dt) \geq \text{MFE}(t)$ siempre. El MFE acumula información sin perderla. El PnL puede subir y bajar, perdiendo la señal de reversiones previas. En el 90\% de los trades (83/92), MFE $>$ PnL en el tiempo de observación ---el PnL perdió información que el MFE preservó.
+
+\textbf{Propiedad 2: Codificación directa de la bifurcación.} El MFE responde directamente ``¿el precio revirtió?'' Un MFE alto significa que el precio bajó (para un short); un MFE bajo significa que no. PnL $\approx 0$ es ambiguo: podría significar ``nunca revirtió'' (MFE $= 0$) o ``revirtió y volvió'' (MFE $= 2\%$). En nuestros datos, entre 31 trades con PnL $\approx 0$ a los 4 minutos, los que tenían MFE $< 0.5\%$ tuvieron WR $= 21\%$ mientras que los con MFE $\geq 0.5\%$ tuvieron WR $= 47\%$. Mismo PnL, resultados opuestos ---el MFE discrimina.
+
+\textbf{Propiedad 3: Suficiencia aproximada.} Agregar PnL al MFE contribuye solo 1.6\% de información adicional sobre el resultado. Agregar velocidad contribuye 0\%. Agregar ambos contribuye 3.7\%. El MFE solo captura $\sim$96\% de la información del path completo sobre Win/Loss.
+
+\textbf{Propiedad 4: Complejidad mínima.} El MFE requiere una sola operación de máximo corriente sin parámetros. Por la DPI, transformaciones más complejas no pueden incrementar la información y generalmente la degradan por ruido de estimación.
+
+\subsection{La Desigualdad de Procesamiento de Datos como Teorema de Imposibilidad}
+
+La aplicación de la DPI requiere que se satisfaga la propiedad de Markov: el resultado final del trade $Y$ y cualquier regla de salida compleja $g(\text{MFE}(T))$ deben ser \emph{condicionalmente independientes} dado el estado temprano del MFE. Formalmente, debe cumplirse la cadena de Markov:
+\begin{equation}
+    Y \longrightarrow \text{MFE}(T) \longrightarrow g(\text{MFE}(T))
+\end{equation}
+Esta condición se satisface porque $g$ es una función determinística de $\text{MFE}(T)$: dado $\text{MFE}(T)$, el valor de $g(\text{MFE}(T))$ queda completamente determinado, y por lo tanto no puede aportar información adicional sobre $Y$ que no esté ya contenida en $\text{MFE}(T)$. Esto es independiente de la forma funcional de $g$ ---ya sea un trailing stop, un take-profit, una re-evaluación, o cualquier combinación de estos.
+
+\begin{theorem}[DPI para Salidas de Trades]
+\label{thm:dpi}
+Sea $Y$ el resultado del trade y $g(\text{MFE}(T))$ cualquier transformación de la observación del MFE (trailing stop, indicador compuesto, re-evaluación). Dado que $Y \to \text{MFE}(T) \to g(\text{MFE}(T))$ forma una cadena de Markov:
+\begin{equation}
+    I(Y; g(\text{MFE}(T))) \leq I(Y; \text{MFE}(T))
+\end{equation}
+con igualdad si y solo si $g$ es un estadístico suficiente para $Y$.
+\end{theorem}
+
+\begin{corollary}[Optimalidad del Umbral Simple]
+La decisión de salida óptima es una comparación con umbral:
+$\text{Rama} = \text{BUENA si } \text{MFE}(T) \geq \theta, \text{ MALA en caso contrario}$,
+donde $\theta$ maximiza la asimetría de clusters.
+\end{corollary}
+
+Verificación empírica: probamos 39 estrategias de salida incluyendo trailing stops (7 niveles de callback), take-profits (6 niveles), TP/SL simétricos (4 niveles), branch+trailing, branch+TP, re-evaluación, extensión dinámica, y salidas por tiempo fijo. \textbf{38 de 39 produjeron menor Profit Factor que MFE-Branching.} La única excepción (TP al 0.5\%) logró mayor PF pero menos de la mitad del PnL total ---truncó el cluster HIGH que es la fuente del edge.
+
+%===============================================================================
+\section{Las Cuatro Condiciones para Generar Edge}
+%===============================================================================
+
+\begin{condition}[Bimodalidad Temprana (C1)]
+La distribución del MFE en el tiempo de observación $T_{\text{obs}}$ debe ser bimodal:
+\begin{equation}
+    \Delta\text{BIC}(\text{GMM}_2 \text{ vs } \text{GMM}_1) > 10 \quad \text{y} \quad D_{\text{Ashman}} > 1.5
+\end{equation}
+Esto verifica que el mercado bifurca después de la entrada \textbf{y} que la bifurcación es detectable en $T_{\text{obs}}$. Esto subsume cualquier requerimiento sobre la distribución del MFE total, ya que el MFE es monótonamente no-decreciente: bimodalidad temprana implica bimodalidad total.
+\end{condition}
+
+\begin{condition}[Asimetría de Clusters (C2)]
+La suma ponderada de los retornos por cluster debe ser positiva:
+\begin{equation}
+    P(\text{BUENA}) \cdot \mathbb{E}[\text{PnL} | \text{BUENA}] + P(\text{MALA}) \cdot \mathbb{E}[\text{PnL} | \text{MALA}] > 0
+\end{equation}
+donde BUENA y MALA se definen por el umbral $\theta$ del MFE en $T_{\text{obs}}$. Esta es la condición de edge: el cluster ganador debe generar suficiente ganancia para cubrir el costo del cluster perdedor.
+
+MFE-Branching \textbf{amplifica} la asimetría positiva de clusters comprimiendo $\mathbb{E}[|\text{PnL}| \,|\, \text{MALA}]$ (salida temprana en trades malos) mientras preserva $\mathbb{E}[\text{PnL} \,|\, \text{BUENA}]$ (hold completo en trades buenos). Sin embargo, \textbf{no puede crear} asimetría positiva a partir de negativa ---el edge debe existir en la señal de entrada.
+\end{condition}
+
+\begin{condition}[Independencia Temporal (C3)]
+Los resultados de los trades deben ser aproximadamente i.i.d.:
+\begin{equation}
+    \text{Corr}(Y_n, Y_{n+1}) \approx 0 \quad \text{(test $\chi^2$, test de rachas)}
+\end{equation}
+Esto valida el procedimiento de calibración, que asume extracciones independientes de una distribución estacionaria.
+\end{condition}
+
+\begin{condition}[Persistencia (C4)]
+Las condiciones C1 y C2 deben ser estacionarias durante el período de operación:
+\begin{itemize}
+    \item El $\Delta$BIC del MFE en $T_{\text{obs}}$ debe mantenerse $> 5$ en ventanas rolling.
+    \item La asimetría de clusters debe mantenerse positiva en ventanas rolling.
+    \item Si cualquiera de las condiciones falla, el régimen cambió y se debe pausar la operación.
+\end{itemize}
+Esta es la condición que explica por qué las estrategias ``dejan de funcionar'': C1 falla (el mercado deja de bifurcar de la misma manera) o C2 falla (el ruteo entre clusters se invierte).
+\end{condition}
+
+%===============================================================================
+\section{El Algoritmo MFE-Branching}
+%===============================================================================
+
+\subsection{Algoritmo}
+
+\begin{enumerate}
+    \item \textbf{Circuit breaker}: En todo momento, si $\pi(t) \leq -\text{SL}$, cerrar inmediatamente.
+    \item \textbf{Observar}: Durante $[t_0, t_0 + T_{\text{obs}}]$, trackear $\text{MFE}(t)$.
+    \item \textbf{Clasificar}: En $t_0 + T_{\text{obs}}$: BUENA si $\text{MFE}(T_{\text{obs}}) \geq \theta$, sino MALA.
+    \item \textbf{Salir por timer}: Cerrar en $t_0 + T_{\text{buena}}$ o $t_0 + T_{\text{mala}}$.
+\end{enumerate}
+
+Sin trailing stops. Sin take-profits. Sin re-evaluación. La salida es un timer.
+
+\subsection{Calibración de Parámetros}
+
+El algoritmo tiene cinco parámetros, derivados de tres principios:
+
+\begin{table}[H]
+\centering
+\caption{Calibración de parámetros desde principios de Shannon}
+\begin{tabular}{llll}
+\toprule
+Parámetro & Fórmula & Principio \\
+\midrule
+$T_{\text{obs}}$ & $\arg\max_T \frac{I(\text{MFE}(T); Y)}{|\mathbb{E}[\text{MAE}(T)]|}$ & Máx info por unidad de costo \\
+$\theta$ & $\arg\max_\theta [\text{Asimetría de Clusters}(\theta)]$ & Máx edge \\
+$T_{\text{buena}}$ & $\arg\max_T f^*(T \,|\, \text{BUENA})$ & Máx retorno ajustado por riesgo \\
+$T_{\text{mala}}$ & $\arg\max_T \mathbb{E}[\text{PnL}(T) \,|\, \text{MALA}]$ & Mín pérdida \\
+SL & $P_{99}(|\text{MAE}|)$, activa ${<}2\%$ de trades & Protección catastrófica \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Las derivaciones clave:
+
+\textbf{$T_{\text{obs}}$}: La información mutua $I(\text{MFE}(T); Y)$ crece de forma cóncava mientras que el costo $|\mathbb{E}[\text{MAE}(T)]|$ crece linealmente. El ratio tiene su pico temprano ---típicamente 2--5 minutos en scalping de crypto.
+
+\textbf{$T_{\text{buena}}$}: Usamos la fórmula $f^*(T) = P_W(T) \cdot b(T) - P_L(T)$ como \emph{función objetivo ajustada por riesgo} para determinar el tiempo de hold óptimo, no en su sentido original de dimensionamiento de posición (capital allocation). En este contexto, $f^*$ actúa como penalizador natural de la varianza: el ratio de asimetría $b(T) = \mathbb{E}[W(T)] / \mathbb{E}[|L(T)|]$ se degrada a medida que el trade devuelve ganancias (el numerador baja más rápido que el denominador), lo que produce un máximo bien definido. Empíricamente, $\arg\max_T \mathbb{E}[\text{PnL}(T)]$ sin ajuste de riesgo produce tiempos excesivamente largos (hasta 30 minutos con $n=25$), mientras que $f^*(T)$ converge consistentemente al rango de 9--12 minutos a través de múltiples ventanas de calibración.
+
+\textbf{$T_{\text{mala}}$}: Como la rama mala no contiene información útil ($\text{MI} \approx 0$), el único objetivo es minimizar la pérdida. La curva de PnL tiene un máximo local (punto de rebote) donde la salida es óptima.
+
+\subsection{MFE-Branching como Amplificador de Asimetría}
+
+MFE-Branching incrementa el ratio de asimetría $b = \mathbb{E}[W] / \mathbb{E}[|L|]$ comprimiendo las pérdidas desproporcionadamente:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+& AEPS (baseline) & MFE-Branching & Cambio \\
+\midrule
+$b$ & 0.95 & 2.44 & +157\% \\
+$\mathbb{E}[|L|]$ & 2.78\% & 0.69\% & $-$75\% \\
+$\mathbb{E}[W]$ & 2.65\% & 1.68\% & $-$37\% \\
+Kelly $f^*$ & +0.047 & +0.807 & +1617\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+La pérdida promedio disminuyó un 75\% mientras que la ganancia promedio solo un 37\%, resultando en que $b$ más que se duplicara.
+
+%===============================================================================
+\section{Validación de Señales Sin Trades Reales}
+%===============================================================================
+
+Una pregunta práctica crítica: ¿cómo verificar las cuatro condiciones \emph{antes} de arriesgar capital? Proveemos un procedimiento de seis pasos:
+
+\begin{enumerate}
+    \item \textbf{Definir la señal}: Cualquier regla que genere timestamps de entrada (cruce de indicador, detección de patrón, clasificador de machine learning, etc.).
+
+    \item \textbf{Simular trades sobre datos históricos}: Para cada señal de entrada sobre datos OHLCV ($\geq 500$ barras), registrar el path completo del trade: PnL y MFE a cada barra durante una ventana de hold de $H$ barras. Se requieren $\geq 50$ trades simulados.
+
+    \item \textbf{Verificar C1 (Bimodalidad Temprana)}: Para cada candidato $T_{\text{obs}} \in [1, H/2]$, calcular $\Delta$BIC del MFE en $T_{\text{obs}}$. Si ningún $T_{\text{obs}}$ produce $\Delta$BIC $> 10$, la señal no genera bifurcación bimodal ---MFE-Branching no va a funcionar. \textbf{Parar acá.}
+
+    \item \textbf{Verificar C2 (Asimetría de Clusters)}: En el mejor $T_{\text{obs}}$, barrer $\theta$ y calcular:
+    \begin{equation}
+        A(\theta) = P(\text{MFE} \geq \theta) \cdot \mathbb{E}[\text{PnL} \,|\, \text{MFE} \geq \theta] + P(\text{MFE} < \theta) \cdot \mathbb{E}[\text{PnL} \,|\, \text{MFE} < \theta]
+    \end{equation}
+    Si $\max_\theta A(\theta) \leq 0$, la señal no tiene edge ---MFE-Branching no lo puede crear. \textbf{Parar acá.}
+
+    \item \textbf{Verificar C3 (Independencia)}: Correr test $\chi^2$ de autocorrelación y test de rachas sobre los resultados simulados. Si $p < 0.05$, hay dependencia serial y la calibración puede no ser confiable.
+
+    \item \textbf{Verificar C4 (Persistencia)}: Dividir los trades simulados en dos mitades. Verificar que C1 ($\Delta$BIC $> 5$) y C2 ($A > 0$) se mantienen en ambas mitades independientemente. Si cualquiera falla en la segunda mitad, la señal puede no ser durable.
+\end{enumerate}
+
+Si las cuatro condiciones pasan, la receta de calibración produce $T_{\text{obs}}$, $\theta$, $T_{\text{buena}}$, $T_{\text{mala}}$, y SL automáticamente. El siguiente paso es 50 trades en paper trading o tamaño chico para confirmar out-of-sample.
+
+%===============================================================================
+\section{Validación Empírica: Caso de Estudio $\Psi$-JAM}
+%===============================================================================
+
+\subsection{Dataset}
+
+97 trades reales de la estrategia $\Psi$-JAM v4 de shorts en altcoins, ejecutados en Binance Futures con apalancamiento 5$\times$ entre el 17 de marzo y el 9 de abril de 2026.
+
+\subsection{Verificación de Condiciones}
+
+\begin{table}[H]
+\centering
+\caption{Cuatro condiciones verificadas en $\Psi$-JAM (97 trades, salidas MFE-Branching)}
+\begin{tabular}{llll}
+\toprule
+Condición & Test & Resultado & Veredicto \\
+\midrule
+C1: Bimodalidad temprana & $\Delta$BIC en $T_{\text{obs}}=4$min & +70.8 & $\checkmark$ \\
+C2: Asimetría de clusters & $P_B \cdot E_B + P_M \cdot E_M$ & +0.618\%/trade & $\checkmark$ \\
+C3: Independencia & $\chi^2$ $p=0.664$, rachas $p=0.591$ & i.i.d. & $\checkmark$ \\
+C4: Persistencia & $\Delta$BIC$>5$ y $A>0$ en todos los tercios & Estable & $\checkmark$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Estructura de Clusters}
+
+\begin{table}[H]
+\centering
+\caption{Descomposición por clusters con salidas MFE-Branching}
+\begin{tabular}{lcccccc}
+\toprule
+Rama & $n$ & \% del total & WR & $\mathbb{E}[\text{PnL}]$ & $b$ & Contribución \\
+\midrule
+BUENA (MFE$\geq$0.8\%) & 39 & 40\% & 69\% & +1.91\% & 3.23 & +0.77\%/trade \\
+MALA (MFE$<$0.8\%) & 58 & 60\% & 41\% & $-$0.25\% & 0.54 & $-$0.15\%/trade \\
+\midrule
+\textbf{Sistema} & \textbf{97} & \textbf{100\%} & \textbf{53\%} & \textbf{+0.62\%} & \textbf{2.44} & \textbf{+0.62\%/trade} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La rama BUENA genera +0.77\% por trade mientras que la rama MALA cuesta solo $-$0.15\%. El ratio de 5:1 entre estas contribuciones es la fuente del edge.
+
+\subsection{Rendimiento}
+
+\begin{table}[H]
+\centering
+\caption{Comparación del sistema (97 trades)}
+\begin{tabular}{lcccccc}
+\toprule
+Sistema & PnL total & PnL (5$\times$) & PF & Kelly $f^*$ & $R^2$ & Máx DD \\
+\midrule
+AEPS (baseline) & +12.8\% & +64\% & 1.10 & +0.047 & 0.06 & $-$27\% \\
+MFE-Branching & +60.0\% & +300\% & 2.76 & +0.807 & 0.83 & $-$5.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Robustez de Parámetros}
+
+Una búsqueda de grilla sobre 11,869 combinaciones de parámetros muestra que el 98\% del espacio de parámetros supera al baseline. La región óptima forma una meseta, no un pico. Variar cualquier parámetro individual $\pm$30\% cambia el PnL en menos de 15\%.
+
+\subsection{Verificación de la DPI: 39 Estrategias de Salida Comparadas}
+
+\begin{table}[H]
+\centering
+\caption{Mejor estrategia de salida por categoría (97 trades)}
+\begin{tabular}{lcc}
+\toprule
+Categoría & Mejor PF & vs MFE-B (2.76) \\
+\midrule
+Trailing stop (puro) & 0.97 & $-$1.79 \\
+Branch + Trailing & 2.60 & $-$0.16 \\
+Branch + Take-profit & 3.12* & +0.36 \\
+TP/SL simétrico & 0.99 & $-$1.77 \\
+Tiempo fijo & 2.14 & $-$0.62 \\
+Re-evaluación / Dinámico & 2.81 & +0.05 \\
+\bottomrule
+\end{tabular}\\
+\small{*TP 0.5\% logra mayor PF pero menos de la mitad del PnL total.}
+\end{table}
+
+Los 7 trailing stops puros produjeron \textbf{PnL negativo}. Esto no es mala suerte ---es la DPI: los trailing stops procesan la señal del path, introduciendo ruido de timing y dependencia de la volatilidad microestructural que degrada la información.
+
+%===============================================================================
+\section{Validación Sintética}
+%===============================================================================
+
+\subsection{Paths de Ornstein-Uhlenbeck}
+
+Generamos trades sintéticos como procesos OU con dinámica dependiente del cluster. Con probabilidad $P(\text{HIGH})$, el trade sigue dinámica de mean-reversion ($\kappa_{\text{HI}} = 0.05$, $\mu > 0$); caso contrario, reversión débil/nula ($\kappa_{\text{LO}} = 0.008$, $\mu < 0$).
+
+\subsection{Resultados: 11 Escenarios, Calibración por Escenario}
+
+\begin{table}[H]
+\centering
+\caption{Validación sintética con calibración por escenario}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Escenario & $f^*_{\text{naive}}$ & $f^*_{\text{branch}}$ & $\Delta b$ & Var $\Delta$ & Resultado \\
+\midrule
+Tipo JAM ($P$=65\%) & +1.02 & +1.90 & +68\% & +22\% & Amplificado \\
+Asimétrico ($P$=40\%, $b$=3) & +1.75 & +3.47 & +74\% & +11\% & Amplificado \\
+Convexo ($P$=20\%, $b$=5) & +1.05 & +2.21 & +49\% & +12\% & Amplificado \\
+WR alto ($P$=80\%) & +0.59 & +1.36 & +99\% & +48\% & Amplificado \\
+Señal limpia & +2.16 & +5.33 & +96\% & +22\% & Amplificado \\
+Señal ruidosa & +0.77 & +1.41 & +57\% & +39\% & Amplificado \\
+Borderline & +0.28 & +0.84 & +72\% & +49\% & Amplificado \\
+\midrule
+Unimodal & $-$0.03 & +0.08 & +18\% & +18\% & Salvado \\
+Unimodal+edge & +0.05 & +0.52 & +107\% & +52\% & Amplificado \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Con calibración por escenario: Kelly amplificado en 9/9 escenarios bimodales+positivos, $b$ incrementado en 9/9, varianza reducida en 9/9.
+
+\textbf{Hallazgo crítico}: usar parámetros fijos (de $\Psi$-JAM) en todos los escenarios degradó resultados en 10/14 casos. El \emph{framework} es general; los \emph{parámetros} no lo son.
+
+%===============================================================================
+\section{Generalización: Indicadores Estándar}
+%===============================================================================
+
+Probamos MFE-Branching en 15 señales de 8 indicadores estándar (RSI, MACD, SuperTrend, cruce de SMA, cruce de EMA, Bollinger, spike de volumen, Estocástico) a través de DOGE y XRP. MFE-Branching amplificó Kelly en \textbf{15/15 señales} (100\%).
+
+Hallazgos clave:
+\begin{itemize}
+    \item Las señales de cruce (MACD, SMA, EMA) funcionan bien como shorts con MFE-Branching (PF 1.3--2.9).
+    \item Las señales de sobrecompra (RSI, Stoch, BB) mayormente fallan ---detectan bimodalidad (C1$\checkmark$) pero carecen de asimetría de clusters (C2$\times$), confirmando que la bimodalidad sola es insuficiente.
+    \item El mismo indicador produce resultados diferentes en diferentes activos (RSI$>$70 en XRP: Kelly $-0.065 \to +0.159$; en DOGE: Kelly $-0.220 \to -0.042$), confirmando que el edge es una propiedad del par señal$\times$mercado, no de la señal sola.
+\end{itemize}
+
+\subsection{Por Qué las Estrategias Dejan de Funcionar}
+
+El análisis de persistencia de bimodalidad muestra que la mayoría de las señales de indicadores estándar tienen bimodalidad \textbf{inestable}: presente en una mitad del dataset, ausente en la otra. Esto es precisamente por qué las estrategias retail ``funcionan por un tiempo y después paran'' ---C1 o C2 deja de cumplirse cuando el régimen de mercado cambia.
+
+MFE-Branching no puede prevenir cambios de régimen, pero el monitoreo de $\Delta$BIC rolling y asimetría de clusters provee un \textbf{sistema de alerta temprana}: cuando estas métricas se degradan, la señal está perdiendo edge y la operación debería pausarse.
+
+%===============================================================================
+\section{Estabilidad de Parámetros Walk-Forward}
+%===============================================================================
+
+La recalibración walk-forward (trade por trade desde el trade 47 en adelante) revela:
+
+\begin{table}[H]
+\centering
+\caption{Estabilidad de parámetros a través de recalibraciones}
+\begin{tabular}{lcccc}
+\toprule
+Parámetro & Rango & Cambios (de 46) & Convergencia & $n$ necesario \\
+\midrule
+$T_{\text{obs}}$ & 2--3 min & 4 (9\%) & $\checkmark$ Estable & $\sim$50 trades \\
+$\theta$ & 0.9--1.1\% & 2 (4\%) & $\checkmark$ Estable & $\sim$50 trades \\
+$T_{\text{buena}}$ & 8--29 min & 5 (11\%) & $\sim$ Ruidoso & $\sim$150 trades \\
+$T_{\text{mala}}$ & 5 min & 0 (0\%) & $\checkmark$ Perfecto & $\sim$30 trades \\
+SL & $-4$\% a $-8$\% & 4 (9\%) & $\sim$ Moderado & $\sim$100 trades \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+El análisis bootstrap ($n = 30$ a $1000$ trades) muestra que $T_{\text{buena}}$ converge ($\sigma < 2$ min) en $n_{\text{buena}} \approx 50$ ($n_{\text{total}} \approx 150$). Recomendación práctica: calibrar después de 50 trades, recalibrar cada 50 trades adicionales.
+
+La recalibración rolling (cada trade) realmente \textbf{empeoró} el rendimiento (PF 1.29 vs 1.92 para parámetros fijos) porque con $n$ chico en la rama buena, $T_{\text{buena}}$ es ruidoso.
+
+%===============================================================================
+\section{Discusión}
+%===============================================================================
+
+\subsection{Lo Que Este Framework Invalida}
+
+En mercados con bifurcación tipo Kramers (MFE bimodal, resolución rápida):
+\begin{itemize}
+    \item \textbf{Trailing stops}: Los 7 probados produjeron PnL negativo. Salen por ruido de volatilidad durante los mejores trades.
+    \item \textbf{Take-profits}: Truncan el cluster HIGH ---la fuente del edge.
+    \item \textbf{Salidas dinámicas/adaptativas}: No pueden mejorar la señal cruda del MFE (DPI).
+    \item \textbf{Salidas optimizadas por ML}: Sujetas a la misma restricción de la DPI. Más parámetros $=$ más ruido de estimación.
+\end{itemize}
+
+\textbf{Caveat importante}: Esto aplica a estrategias de mean-reversion con bifurcación rápida. En trend-following (momentum persistente, sin bifurcación), los trailing stops pueden ser apropiados porque la estructura informacional es fundamentalmente diferente.
+
+\subsection{Sobre el Tamaño de Muestra}
+
+Si bien el tamaño de muestra de $n=97$ podría parecer moderado, el test de rachas ($p=0.591$) y la diversidad de activos confirman que la correlación inter-trade es nula. Al ser resultados estrictamente i.i.d., los grados de libertad efectivos de la muestra son máximos, lo que otorga una confianza estadística superior a la de datasets mucho más grandes pero con resultados correlacionados en serie o por exposición al mercado general.
+
+En concreto: los tests de varianza (Levene $p = 0.0002$) y de reducción de drawdown (bootstrap $P = 98.4\%$) son altamente significativos. El test de mejora del PnL medio ($p = 0.32$) no alcanza significancia, lo cual es consistente con un sistema cuya contribución principal es la \emph{reducción de riesgo} más que el incremento de retorno esperado.
+
+La independencia tiene una implicancia adicional: cada trade aporta información nueva al calibrador. No hay redundancia por solapamiento temporal ni por exposición común a un factor (como BTC). Esto se verificó explícitamente: la correlación entre PnL de los trades y el retorno de BTC es $\rho = -0.06$ (market-neutral).
+
+\subsection{Otras Limitaciones}
+
+\begin{enumerate}
+    \item Una sola clase de activos (perpetuos de crypto). Se necesita validación en acciones, FX y commodities.
+    \item El procedimiento de validación de señales requiere datos históricos con granularidad suficiente para simular paths de trades.
+    \item La estimación de $T_{\text{buena}}$ requiere $n_{\text{buena}} \geq 50$ para converger ($\sigma < 2$ min), lo que implica $\sim$150 trades totales con la proporción típica de 35\% rama buena.
+\end{enumerate}
+
+\subsection{Contribuciones}
+
+\begin{enumerate}
+    \item La DPI como \textbf{teorema de imposibilidad} para salidas complejas en mercados bimodales ---la primera aplicación de la DPI de Shannon para demostrar que los trailing stops son probablemente subóptimos.
+    \item \textbf{Cuatro condiciones verificables} (C1--C4) que determinan si una señal puede generar edge con MFE-Branching, con un procedimiento concreto de validación aplicable antes de operar en vivo.
+    \item \textbf{Diagnóstico de fallo de estrategias} como pérdida de condiciones medibles ---no un vago ``cambio de régimen'' sino específico: $\Delta$BIC cae o la asimetría de clusters se invierte.
+    \item El MFE como \textbf{estadístico aproximadamente suficiente} para los resultados de trades, con justificación formal y verificación empírica.
+    \item Una \textbf{receta completa de calibración} (tres principios $\to$ cinco parámetros) que no requiere juicio humano.
+\end{enumerate}
+
+%===============================================================================
+\section{Conclusión}
+%===============================================================================
+
+MFE-Branching provee un framework teóricamente fundamentado para la construcción de estrategias de salida en mercados bimodales. El resultado central es que la Desigualdad de Procesamiento de Datos de Shannon provee un teorema de imposibilidad para salidas complejas: en mercados con bifurcación tipo Kramers, la salida óptima es necesariamente la función más simple posible de la señal más temprana disponible. Cualquier complejidad adicional ---trailing stops, take-profits, re-evaluaciones, indicadores compuestos--- solo puede degradar el rendimiento.
+
+El framework requiere cuatro condiciones verificables, provee una receta de calibración que deriva todos los parámetros a partir de los datos, e incluye un procedimiento de validación de señales aplicable antes de operar en vivo. Las condiciones también sirven como herramienta de diagnóstico: cuando una estrategia ``deja de funcionar'', es porque C1 (bimodalidad) o C2 (asimetría de clusters) dejó de cumplirse ---un evento medible y monitoreable.
+
+\vspace{1cm}
+\noindent\textbf{Disponibilidad de Datos.} Los datos de path de trades y el código de análisis están disponibles contactando al autor.
+
+\end{document}

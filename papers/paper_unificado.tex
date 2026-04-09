@@ -1,0 +1,666 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,bm,amsthm,mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array,tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta,positioning,decorations.pathmorphing,calc,fit,backgrounds,patterns}
+
+\geometry{margin=2.5cm}
+
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{cgray}{RGB}{149,165,166}
+\definecolor{cdark}{RGB}{44,62,80}
+
+\tcbset{
+  defbox/.style={colback=cblue!5,colframe=cblue!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  thmbox/.style={colback=cgreen!5,colframe=cgreen!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  warnbox/.style={colback=corange!5,colframe=corange!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  keybox/.style={colback=cpurple!5,colframe=cpurple!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+}
+
+\newtheorem{definition}{Definition}[section]
+\newtheorem{proposition}{Proposition}[section]
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{corollary}{Corollary}[section]
+\newtheorem{remark}{Remark}[section]
+
+\newcommand{\af}{\alpha_f}
+\newcommand{\score}{\hat{S}_{\alpha_f}}
+\newcommand{\exh}{\hat{E}}
+\newcommand{\OI}{\mathcal{O}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\Fext}{F_{\mathrm{ext}}}
+\newcommand{\Fspring}{F_{\mathrm{spring}}}
+\newcommand{\Ffund}{F_{\mathrm{fund}}}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries Trading the $\af$ Bifurcation:}\\[4pt]
+{\LARGE\bfseries Survival Dynamics, Shannon Information,}\\[4pt]
+{\LARGE\bfseries and Optimal Exit in Perpetual Futures}\\[16pt]
+{\large Javier Epeloa\quad$\cdot$\quad Mapplics}\\[8pt]
+{\normalsize Technical Document --- April 2026 (v6)}\\[4pt]
+{\small\itshape Unified theory: Langevin microstructure, bimodal outcomes,\\
+Weibull survival, information-theoretic exit, and adaptive management}
+\end{center}
+
+\vspace{8pt}
+
+\begin{abstract}
+We present a unified framework for systematic short-selling in altcoin perpetual futures, derived from the generalized Langevin equation of exchange microstructure. The strategy exploits the sign bifurcation of the behavioral funding coefficient~$\af$: when~$\af$ transitions from negative (destabilizing) to positive (restoring), accumulated elastic energy detonates through liquidation cascades. We establish five principal results on $N=83$ trades with complete path data (11,827 trajectory points).
+
+\textbf{(1)~Bimodality.} The entry signal produces bimodal MFE distributions ($\Delta\text{BIC} = 23.66$, KS $p < 10^{-6}$), with MFE following Beta($\alpha=0.717, \beta=1.919$) --- the signature of a diffusion process with absorbing barrier. \textbf{(2)~Survival.} Trade outcomes follow Weibull survival with shape $k=0.441 < 1$ (infant mortality): the hazard of escape decays monotonically, with median escape time 5.8~minutes. \textbf{(3)~Damping correspondence.} The three Langevin damping regimes --- overdamped ($\Delta > 0$), underdamped ($\Delta < 0$), and critically damped ($\Delta = 0$) --- map to observed trade archetypes: \textsc{Zombie} (27 trades, 15\% WR), \textsc{Grinder} (42 trades, 100\% WR), and \textsc{Trap} (10 trades, 0\% WR). \textbf{(4)~Shannon channel.} Formalizing each trade as a noisy communication channel, the entry signal contributes 0.013~bits while the price trajectory contributes 0.17~bits --- a 13:1 ratio favoring post-entry management. An information-theoretic exit system based on the Value of Information achieves $+35.8\%$ cumulative PnL versus $+8.6\%$ for the threshold-based system, consistent with the Data Processing Inequality. \textbf{(5)~Independence.} Trade outcomes are i.i.d.\ ($\chi^2$ $p=0.95$, runs $p=0.69$) and uncorrelated with Bitcoin ($\rho=-0.06$, $p=0.59$), confirming structural alpha independent of market direction.
+
+The framework provides a falsifiable, signal-agnostic methodology: if P(win~$|$~MFE$_t$,~$t$) shows no separation, the signal has no exploitable structure.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=================================================================
+\section{Introduction}
+\label{sec:intro}
+%=================================================================
+
+The perpetual futures contract is the dominant derivative in cryptocurrency markets, with daily volume exceeding \$100B on Binance alone. Unlike traditional futures, perpetuals have no expiry and maintain price convergence through a periodic funding rate mechanism: when the perpetual trades above spot, long holders pay short holders, and vice versa. This mechanism, combined with leveraged positions and forced liquidations, creates mechanical forces absent in spot markets.
+
+This paper formalizes a trading system that exploits these mechanical forces. The system is derived from first principles --- the generalized Langevin equation governing the detrended basis --- rather than from statistical pattern-matching on historical prices. The central insight is threefold:
+
+\begin{enumerate}[leftmargin=2em]
+\item The \textbf{entry signal} detects conditions for a mechanical bifurcation (the spring inversion $\af < 0 \to \af > 0$) but does not predict whether the bifurcation will occur. Each trade is a noisy binary experiment.
+\item The \textbf{trade outcome} is governed by a survival process (Weibull $k < 1$) where the probability of favorable resolution decays monotonically with time. Bimodality in the outcome distribution is a \emph{consequence} of this survival process, not a separate phenomenon.
+\item The \textbf{optimal exit} is determined by Shannon information theory: close the trade when the Value of Information from continued observation falls below the cost of holding. This unifies all exit mechanisms (stop loss, trailing, abort) into a single criterion.
+\end{enumerate}
+
+All results are validated on $N=83$ trades executed live between March 17 and April 6, 2026, across 55 distinct altcoin perpetual contracts, with complete path data sampled every 10--30 seconds (11,827 trajectory points total).
+
+
+%=================================================================
+\section{The Generalized Langevin Equation}
+\label{sec:langevin}
+%=================================================================
+
+\subsection{Derivation from Microstructure}
+
+The detrended basis $x(t) \coloneqq P_{\mathrm{perp}}(t) - P_{\mathrm{ref}}(t)$ satisfies:
+\begin{equation}
+\boxed{M(\OI)\,\ddot{x} + \gamma(t)\,\dot{x} + \Fspring(x,t) = \Fext(t) + \sigma_\xi\,\xi(t)}
+\label{eq:langevin}
+\end{equation}
+where each term has a microstructural origin:
+\begin{itemize}[leftmargin=1.5em]
+\item $M(\OI) = h(\OI)$: effective inertia, monotonically increasing in aggregate open interest.
+\item $\gamma(t) = \gamma_0 + \beta_V V(t) + \beta_c V_{\text{cascade}}(t)(1-\eta)$: dissipative friction from market making, volume drag, and cascade friction.
+\item $\Fspring(x,t)$: piecewise restoring force with three zones --- dead zone ($|x| < x_d$, damper only), elastic zone ($x_d \leq |x| < x_c$, funding spring active), and plastic zone ($|x| \geq x_c$, cascade/saturation).
+\item $\Fext(t)$: external order flow not captured by the endogenous spring.
+\item $\sigma_\xi\,\xi(t)$: white noise, $\langle\xi(t)\xi(t')\rangle = \delta(t-t')$.
+\end{itemize}
+
+\subsection{The Behavioral Coefficient $\af$}
+
+The funding force in the elastic zone is $\Ffund = -\af(t)\cdot\OI(t)\cdot r(t)$, where $r(t)$ is the funding rate. Under normal conditions, $\af > 0$ (restoring). The coefficient undergoes a sign bifurcation when herding dominates rationality:
+\begin{equation}
+\af(t) = \af^{(0)} - \beta_{\text{FOMO}}(t) \quad\Longrightarrow\quad \af < 0 \;\text{ when }\; \beta_{\text{FOMO}} > \af^{(0)}
+\end{equation}
+
+While $\af < 0$, elastic potential energy accumulates: $U(t) = \frac{1}{2}|\af(t)|\,\OI(t)\,r(t)\,x(t)^2$. The transition $\af < 0 \to \af > 0$ releases this energy through forced liquidation cascades.
+
+\subsection{Damping Regimes and the Discriminant}
+\label{sec:damping}
+
+The Langevin equation~\eqref{eq:langevin} admits three solution regimes determined by the discriminant:
+\begin{equation}
+\Delta = \gamma^2 - 4M\kappa
+\end{equation}
+
+\begin{tcolorbox}[defbox, title=Three Damping Regimes $\to$ Trade Archetypes]
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Overdamped} ($\Delta > 0$): Price relaxes monotonically without developing momentum. The trade never escapes the potential well. Archetype: \textsc{Zombie} (27 trades, 15\% WR, MFE $= 0.63\%$).
+\item \textbf{Underdamped} ($\Delta < 0$): Price oscillates with amplitude, multiple ``attempts'' to cross the escape barrier. Archetype: \textsc{Grinder} (42 trades, 100\% WR, MFE $= 4.54\%$).
+\item \textbf{Critically damped} ($\Delta = 0$): The boundary between regimes. Empirical escape threshold MFE $\approx 1.2\%$. Archetype: \textsc{Trap} (10 trades, 0\% WR --- escaped but returned).
+\end{itemize}
+\end{tcolorbox}
+
+The bimodality of the MFE distribution is a \emph{necessary consequence} of this structure: trades partition between overdamped (trapped, MFE $< 1.2\%$) and underdamped (escaped, MFE $> 1.2\%$), with the critical damping boundary $\Delta = 0$ as separator. The transition is abrupt because $\Delta = 0$ is a qualitative boundary between fundamentally different dynamical behaviors.
+
+The AC1 autocorrelation from the L2 order book is the empirical proxy for $\kappa$. When AC1 is high ($> 0.20$), mean reversion is strong ($\kappa$ large), and the system is more likely underdamped. When AC1 falls below 0.05, $\kappa$ weakens, the system becomes overdamped, and trades are trapped. The operational rule ``do not short without $\kappa$'' is literally ``do not enter the overdamped regime.''
+
+
+%=================================================================
+\section{Entry Signal: Composite Proxy for $\af < 0$}
+\label{sec:signal}
+%=================================================================
+
+\subsection{Signal Construction}
+
+Since $\af$ is not directly observable, we construct a composite proxy $\score \in [0,5]$:
+\begin{equation}
+\score(t) = c_{\text{fund}}(t) + c_{\OI}(t) + c_{\text{price}}(t) + c_{\text{taker}}(t) + c_{\text{vol}}(t)
+\end{equation}
+where each $c_k \in \{0, 0.5, 1\}$ maps to a necessary condition for spring inversion: funding under tension ($r \geq 0.01\%$), OI accumulating ($\Delta\OI_{24h} \geq 2.5\%$), sustained momentum ($\Delta P_{12h} \geq 1.5\%$), aggressive buyers ($\eta_{\text{buy}}^{8h} \geq 52\%$), and volume spike ($V/\bar{V}_{48h} \geq 1.4\times$). Entry requires $\score \geq 3$ with energy accumulation $\mathcal{E} \geq 6$h and exhaustion $\exh \geq 2$.
+
+\subsection{Why the Signal Is Structural}
+
+The signal measures \textbf{positioning} (funding, OI, leverage), not \textbf{price} (RSI, MACD). Price is the output of the market; positioning is the internal state. The distinction is between measuring temperature and measuring pressure: temperature says how things are now; pressure says whether the system will explode.
+
+This has a critical consequence for sustainability: the signal exploits a conflict of interests inherent to the perpetual futures mechanism. Longs pay funding to maintain leveraged positions in speculative assets --- they are buying upside convexity. The strategy sells this convexity at maximum tension. As long as traders are willing to pay funding for leveraged long positions, the counterparty exists. This is a property of human psychology combined with exchange incentive structures, not a statistical pattern subject to arbitrage.
+
+\subsection{Robustness Through Composite Design}
+
+Individual component thresholds are imperfect. The $c_{\text{price}}$ threshold (3\%) is absolute and not volatility-normalized, making it the theoretically weakest component. However, the strategy operates across 55 distinct symbols with vastly different volatility profiles, and the win rate is consistent across them. This is because the conjunction of five simultaneous conditions provides implicit normalization: a 3\% pump that is noise in a high-volatility coin is unlikely to coincide with extreme funding, rising OI, and dominant taker buy ratio simultaneously. The composite score is robust through redundancy, not through perfection of individual components.
+
+
+%=================================================================
+\section{Bimodal Outcome Structure}
+\label{sec:bimodality}
+%=================================================================
+
+\subsection{Gaussian Mixture}
+
+The MFE distribution is best described by a two-component Gaussian mixture ($\Delta\text{BIC} = 23.66$ vs.\ single Gaussian, ``very strong'' evidence):
+
+\begin{table}[H]
+\centering
+\caption{EM parameters of the MFE mixture model ($N=83$).}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Cluster} & $\mu$ & $\sigma$ & $\pi$ & \textbf{Langevin regime} \\
+\midrule
+Low (loser) & 0.581\% & 0.249\% & 0.282 & Overdamped (trapped) \\
+High (winner) & 3.939\% & 2.568\% & 0.718 & Underdamped (escaped) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Beta Distribution: Diffusion with Absorbing Barrier}
+
+The MFE follows Beta($\alpha = 0.717, \beta = 1.919$) with $\Delta\text{BIC} > 350$ over all mixture alternatives. The parameter $\alpha < 1$ produces infinite density at MFE $= 0$: the signature of a diffusion process with absorbing barrier. This is not a classical double-well ($\alpha < 1, \beta < 1$, U-shaped); it is a single-well process where most particles accumulate at the boundary and those that escape form a long tail.
+
+\subsection{Separation Tests}
+
+\begin{table}[H]
+\centering
+\caption{Winner/loser separation statistics.}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Test} & \textbf{Variable} & \textbf{Statistic} & $p$ \\
+\midrule
+KS test & MFE (W vs L) & $D = 0.614$ & $7.9 \times 10^{-7}$ \\
+Cohen's $d$ & MFE & $1.13$ & --- \\
+MFE threshold 1.2\% & Accuracy & 82.2\% & (Youden $J$ optimal) \\
+LOOCV threshold & Bootstrap median & 1.21\% & IC [0.76\%, 2.88\%] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%=================================================================
+\section{Survival Analysis}
+\label{sec:survival}
+%=================================================================
+
+\subsection{The Escape Process}
+
+Each trade is a first-passage-time problem: starting at MFE $= 0$, the price either crosses $\theta^* = 1.2\%$ (escape event) or remains trapped. With path data, we observe this directly:
+
+\begin{table}[H]
+\centering
+\caption{Escape statistics from path data ($N=83$).}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Interpretation} \\
+\midrule
+Escaped (MFE $\geq 1.2\%$) & 59/83 (71.1\%) & Crossed barrier \\
+Win rate $|$ escaped & 72.9\% & Escape $\Rightarrow$ likely winner \\
+Win rate $|$ never escaped & 16.7\% & Trapped $\Rightarrow$ likely loser \\
+Median escape time & 5.8 min & Fast when it happens \\
+P25 / P75 escape time & 1.5 / 37.3 min & Right-skewed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Weibull Model}
+
+Time-to-escape follows a Weibull distribution (MLE with 59 events, 24 censored):
+\begin{equation}
+S(t) = \exp\!\left[-\left(\frac{t}{\lambda}\right)^k\right], \qquad k = 0.441, \quad \lambda = 66.0\;\text{min}
+\end{equation}
+
+\begin{tcolorbox}[thmbox, title=Infant Mortality Pattern ($k < 1$)]
+The hazard function $h(t) = \frac{k}{\lambda}\left(\frac{t}{\lambda}\right)^{k-1}$ is monotonically \emph{decreasing}. A trade that has not escaped by time~$t$ is progressively less likely to escape at $t + \delta t$. Waiting is not unproductive --- it is \textbf{actively reducing} the probability of a favorable outcome. This is the formal justification for time-based abort: the Weibull hazard says that holding a trapped trade destroys expected value.
+\end{tcolorbox}
+
+\subsection{Connection to Langevin Damping}
+
+The Weibull $k < 1$ is formally equivalent to the overdamped regime with restitution ($\kappa > 0$). A particle that failed to escape on initial momentum is pulled back by $\kappa$ and loses energy to $\gamma$. The decay rate $k - 1 \approx -0.56$ characterizes trapping strength.
+
+\subsection{Survival as the Fundamental Process}
+
+Bimodality is a \emph{consequence} of survival, not a separate phenomenon. The two modes in the MFE distribution are the two outcomes of the same escape process: trades that escaped early accumulate high MFE (winner mode); those that never escaped remain with low MFE (loser mode). The bifurcation is an \emph{event} that occurs (or fails to occur) during the survival window, not an initial state.
+
+Evidence: the P(win $|$ MFE $= 4\%$, $t$) curve starts at 77\% at $t = 30$s, \emph{drops} to 50\% at $t = 4$min, then \emph{rises} to 97\% at $t = 12$min. If bimodality were intrinsic (two types of trades at birth), P(win) for a high-MFE trade would be high from the start. The dip proves that the trade must \emph{survive} a period of uncertainty before classification stabilizes.
+
+
+%=================================================================
+\section{Path-Based Classification Surface}
+\label{sec:pathclass}
+%=================================================================
+
+\subsection{P(win $|$ MFE$_t$, $t$)}
+
+Using kernel-smoothed estimation over 6,031 observations, we construct the probability that a trade ends as a winner given its accumulated MFE at time~$t$:
+
+\begin{table}[H]
+\centering
+\caption{P(win) at selected (MFE, time) coordinates.}
+\begin{tabular}{r|ccccc}
+\toprule
+& \multicolumn{5}{c}{\textbf{MFE at time $t$}} \\
+$t$ (min) & 0.0\% & 0.4\% & 0.8\% & 1.2\% & 2.0\% \\
+\midrule
+0.5 & 49\% & 53\% & 57\% & 62\% & 75\% \\
+2.0 & 47\% & 52\% & 56\% & 62\% & 74\% \\
+5.0 & 43\% & 49\% & 54\% & 59\% & 70\% \\
+10.0 & 41\% & 45\% & 48\% & 54\% & 66\% \\
+20.0 & 36\% & 41\% & 46\% & 50\% & 55\% \\
+60.0 & 38\% & 44\% & 46\% & 46\% & 54\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The P(win) $= 50\%$ contour is a curve in (MFE,~$t$) space, not a fixed threshold. At $t = 0.5$~min, a trade needs MFE~$\approx 0.3\%$ for 50\%. At $t = 20$~min, it needs MFE~$\approx 1.2\%$. The zombie kill ($\theta^* = 1.2\%$ at $\sim$18~min) sits on this contour.
+
+\subsection{Trade Archetypes}
+
+\begin{table}[H]
+\centering
+\caption{Trade archetypes from path analysis ($N=83$).}
+\begin{tabular}{lcccccl}
+\toprule
+\textbf{Archetype} & $n$ & \textbf{WR} & $\bar{\text{PnL}}$ & \textbf{Total} & $\bar{\text{Hold}}$ & \textbf{Regime} \\
+\midrule
+Grinder & 42 & 100\% & $+2.77\%$ & $+116\%$ & 1.6h & Underdamped \\
+Zombie & 27 & 15\% & $-2.89\%$ & $-78\%$ & 2.6h & Overdamped \\
+Trap & 10 & 0\% & $-1.77\%$ & $-18\%$ & 2.1h & Near-critical \\
+Reversal & 3 & 0\% & $-4.17\%$ & $-13\%$ & 3.7h & $\Fext$ resumed \\
+Flash & 1 & 100\% & $+0.32\%$ & $+0.3\%$ & 1.0h & Strongly underdamped \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Grinder archetype ($+116\%$ cumulative, 100\% WR) is the engine. The Zombie ($-78\%$) is the primary loss source and the target of the zombie kill.
+
+
+%=================================================================
+\section{Information-Theoretic Framework}
+\label{sec:shannon}
+%=================================================================
+
+\subsection{The Trade as a Communication Channel}
+
+Each trade is formalized as a noisy communication channel in the sense of Shannon:
+
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Transmitter:} The market's latent state $Z \in \{W, L\}$ (winner or loser regime, determined at entry by the configuration of forces but unknown to the trader).
+\item \textbf{Channel:} The price trajectory $Y_{1:t} = \{$MFE$(\tau), \text{PnL}(\tau), \text{MAE}(\tau)\}_{\tau \leq t}$, corrupted by microstructural noise.
+\item \textbf{Receiver:} The exit system, which must decode $Z$ from $Y_{1:t}$ and act.
+\item \textbf{Noise:} Volatility with $\sigma \approx 0.5\%$ per 20s interval versus signal drift $\mu_W - \mu_L \approx 0.023\%$ per 20s. SNR $\approx 0.04$ per observation.
+\end{itemize}
+
+\subsection{Information Budget}
+
+The total uncertainty at entry is:
+\begin{equation}
+H(O) = -\pi_W \log_2 \pi_W - (1-\pi_W) \log_2(1-\pi_W) = 0.987 \;\text{bits}
+\end{equation}
+with $\pi_W = 0.566$. This is almost maximal ($H_{\max} = 1.000$ bit), confirming that the entry signal provides minimal classification power.
+
+The entry signal contributes:
+\begin{equation}
+I_{\text{signal}} = H_{\max} - H(O) = 1.000 - 0.987 = 0.013 \;\text{bits}
+\end{equation}
+
+The price trajectory contributes, measured by the mutual information $I(\text{MFE}_t; O)$ at time~$t$:
+
+\begin{table}[H]
+\centering
+\caption{Information accumulation over time (5-bin MFE discretization).}
+\begin{tabular}{rcccc}
+\toprule
+$t$ (min) & $I(\text{MFE}_t; O)$ & \% of $H(O)$ & $\Delta I / \Delta t$ (bits/min) \\
+\midrule
+0.2 & 0.026 & 2.6\% & --- \\
+1.0 & 0.068 & 6.9\% & 0.076 \\
+2.0 & 0.118 & 12.0\% & 0.050 \\
+5.0 & 0.072 & 7.3\% & $-0.012$ \\
+10.0 & 0.093 & 9.4\% & 0.004 \\
+20.0 & 0.099 & 10.1\% & 0.001 \\
+30.0 & 0.114 & 11.5\% & 0.001 \\
+60.0 & 0.167 & 16.9\% & 0.002 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tcolorbox}[keybox, title=Signal vs.\ Trajectory: 13:1 Information Ratio]
+The entry signal contributes 0.013 bits. The price trajectory contributes 0.167 bits by $t = 60$~min. The ratio is \textbf{13:1} in favor of post-entry observation. This is the information-theoretic formalization of the principle ``fix the entries, adapt the exits'': the vast majority of relevant information is not available at entry time but is progressively revealed through the channel.
+\end{tcolorbox}
+
+\subsection{Information Rate and Weibull Hazard}
+
+The information rate $dI/dt$ peaks at $t \approx 1$--$2$~min (0.05 bits/min), decays to $< 0.005$ bits/min by $t = 10$~min, and is essentially zero after $t = 30$~min. This decay mirrors the Weibull hazard function: both describe the same phenomenon. The hazard says ``the probability of escape decays as $t^{-0.56}$''; the information rate says ``the rate at which the channel reveals the regime decays at the same rate.'' They are two descriptions of the same underlying process --- the Langevin dynamics with decaying probability of barrier crossing.
+
+\subsection{Data Processing Inequality and Threshold Suboptimality}
+
+The Data Processing Inequality (DPI) states that for any Markov chain $X \to Y \to Z$:
+\begin{equation}
+I(X; Z) \leq I(X; Y)
+\end{equation}
+
+The AEPS converts the continuous trajectory $Y$ into binary comparisons $Z$ (``MFE $>$ 1.14\%?'', ``MAE $>$ 5.3\%?''). By the DPI, $I(O; Z_{\text{AEPS}}) \leq I(O; Y_{\text{trajectory}})$. Each threshold is a lossy compression that destroys information. The continuous estimator P(win $|$ MFE$_t$, $t$) operates closer to $Y$, preserving more information and enabling better classification.
+
+Empirical confirmation: the continuous P(win) exit achieves $+35.8\%$ cumulative PnL versus $+8.6\%$ for threshold-based AEPS --- a 4.2$\times$ improvement attributable to information preservation.
+
+
+%=================================================================
+\section{Optimal Exit via Value of Information}
+\label{sec:voi}
+%=================================================================
+
+\subsection{The Value of Information Criterion}
+
+At each moment~$t$ during a trade, the exit system faces a decision: act now or observe one more interval. The Value of Information (VOI) quantifies the expected benefit of additional observation:
+\begin{equation}
+\text{VOI}(t) = \E[\text{improvement in decision from one more observation at } t]
+\end{equation}
+
+The optimal stopping rule is:
+\begin{equation}
+t^* = \min\, t \;\text{ such that }\; \text{VOI}(t) \leq \text{cost}(t)
+\end{equation}
+where $\text{cost}(t)$ includes funding payments, spread costs, and the risk of adverse price movement.
+
+\subsection{Three Decision Zones}
+
+The (P(win), $dI/dt$) plane partitions into three zones:
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Learning zone} ($dI/dt > \varepsilon$, any P(win)): HOLD. The channel is still transmitting useful information. Each additional observation reduces classification uncertainty. Acting now wastes information that is arriving for free.
+\item \textbf{Negative decision zone} ($dI/dt \leq \varepsilon$, P(win) $< 0.50$): EXIT. Information has saturated and indicates the loser regime. The zombie kill operates here. Waiting will not change the verdict because the channel has no more signal to transmit.
+\item \textbf{Positive decision zone} ($dI/dt \leq \varepsilon$, P(win) $> 0.70$): TRAIL. Information has saturated and indicates the winner regime. Residual uncertainty is about magnitude, not direction. Activate trailing to capture the cascade.
+\end{enumerate}
+
+This unifies zombie kill, trailing stop, early abort, and all other exit mechanisms into instances of the same VOI criterion evaluated in different regions of the state space.
+
+\subsection{Empirical Validation}
+
+\begin{table}[H]
+\centering
+\caption{Information-based exit vs.\ AEPS ($N=83$).}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{AEPS} & \textbf{Shannon-VOI} & \textbf{Delta} \\
+\midrule
+Cumulative PnL & $+8.61\%$ & $+35.83\%$ & $+27.22\%$ \\
+Avg PnL/trade & $+0.104\%$ & $+0.432\%$ & $+0.328\%$ \\
+Win rate & 56.6\% & 48.2\% & $-8.4\%$ \\
+Losses intercepted & --- & 31 ($\varnothing$$-3.3\% \to -0.8\%$) & \\
+Winners cut & --- & 21 & \\
+Avg exit time (exits) & --- & 6.4 min & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Shannon-VOI system has lower win rate (48\% vs.\ 57\%) but dramatically higher PnL because it cuts losses early ($-0.8\%$ average vs.\ $-3.3\%$) while preserving most of the upside. The 21 winners cut represent an opportunity cost of $-69.7\%$, but the 31 losses intercepted save $+77.7\%$, for a net improvement of $+27.2\%$.
+
+\begin{remark}
+This is an in-sample result --- the P(win) surface was calibrated on the same 83 trades. Out-of-sample degradation is expected. However, the magnitude of improvement ($4.2\times$) provides substantial margin: even with 50\% degradation, the information-based exit would still outperform AEPS by $2\times$.
+\end{remark}
+
+
+%=================================================================
+\section{Adaptive Exit Parameter System (AEPS)}
+\label{sec:aeps}
+%=================================================================
+
+\subsection{AEPS as Non-Parametric SPRT}
+
+The current production system (AEPS) implements a sequential probability ratio test where observations are $(MFE(t), MAE(t), t)$ evaluated every 5 seconds, and boundaries are calibrated from rolling windows of 25 trades:
+
+\begin{table}[H]
+\centering
+\caption{AEPS calibration formulas.}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{Formula} & \textbf{Current} \\
+\midrule
+Stop loss & $P_{75}(|\text{MAE}|_{\mathcal{L}_N}) + 0.5\%$ & 5.30\% \\
+Partial TP & $P_{25}(\text{MFE}_{\mathcal{W}})$ & 1.14\% \\
+Trail activation & $P_{50}(\text{MFE}_{\mathcal{W}})$ & 2.00\% \\
+Trail callback & $P_{25}(\text{ETD/MFE})_{\text{pump\_capture}}$ & 30\% \\
+Abort MFE & $P_{50}(\text{MFE}_{\mathcal{L}})$ & 0.62\% \\
+Abort window & $P_{75}(t_{\text{MFE}})_{\mathcal{L}_N}$ & 1.08h \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Zombie Kill Filter}
+
+The zombie kill evaluates each trade once when the abort window expires:
+\begin{equation}
+\text{If } t > t_{\text{abort}} \text{ AND MFE}(t) < \theta^* \;\Longrightarrow\; \text{close at market}
+\end{equation}
+
+Backtest on $N=83$: intercepts 14 trades (11 losers, 3 micro-winners), PnL improvement $+46.2\%$, stop losses reduced from 16 to 4, E-ratio from 0.71 to 1.37.
+
+\subsection{Anti-Degeneracy Protection}
+
+The trailing callback is calibrated using only \texttt{pump\_capture} exits (signal-based, not trailing-based) to prevent a feedback loop where trailing-determined ETD/MFE compresses the callback, which produces more trailing exits with compressed ETD/MFE, ad infinitum.
+
+Censored observations (zombie kills, early aborts) are excluded from MAE calibration (their MAE is truncated) but included in MFE calibration (their MFE is genuine). This is analogous to the Kaplan-Meier estimator.
+
+
+%=================================================================
+\section{Independence of Trade Outcomes}
+\label{sec:independence}
+%=================================================================
+
+\subsection{Markov Analysis}
+
+Chronologically ordered trade sequence ($N=83$): 47W / 36L.
+
+\begin{table}[H]
+\centering
+\caption{Independence tests.}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Test} & \textbf{Statistic} & $p$ & \textbf{Conclusion} \\
+\midrule
+Transition $\chi^2$ & 0.004 & 0.952 & Independent \\
+Runs test & $Z = -0.40$ & 0.690 & Normal runs \\
+PnL autocorrelation (lag 1) & $\rho = +0.13$ & 0.253 & No dependence \\
+MFE autocorrelation (lag 1) & $\rho = +0.13$ & 0.231 & No dependence \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+P(W$|$W) $= 58.7\%$ vs.\ P(W$|$L) $= 55.6\%$ --- essentially identical. Second-order analysis (WW $\to$ 63\%, LL $\to$ 56\%) shows no higher-order dependence. Trade outcomes are i.i.d., validating all estimation procedures.
+
+\subsection{Bitcoin Independence}
+
+\begin{table}[H]
+\centering
+\caption{BTC correlation with trade outcomes.}
+\begin{tabular}{lccc}
+\toprule
+\textbf{BTC metric} & $\rho$ vs PnL & $p$ & \textbf{Significant?} \\
+\midrule
+BTC 1h pre-entry & $+0.074$ & 0.505 & No \\
+BTC 4h pre-entry & $+0.155$ & 0.163 & No \\
+BTC 24h pre-entry & $-0.112$ & 0.312 & No \\
+BTC during trade & $-0.060$ & 0.591 & No \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+No significant correlation with Bitcoin in any window. The strategy generates \textbf{market-neutral alpha}: returns are independent of crypto market direction. BTC rose from \$74,846 to \$69,853 ($-6.7\%$) during the observation period; the strategy was profitable in weeks where BTC rose and weeks where BTC fell.
+
+The sole significant finding: BTC 24h pre-entry vs.\ MFE has $\rho = -0.24$ ($p = 0.027$). When BTC pumped strongly in the preceding 24h, trade MFE is lower --- consistent with macro momentum providing external force $\Fext$ that resists the altcoin cascade. This is an informational finding, not an operational one: the effect is not strong enough to filter on with current sample size.
+
+
+%=================================================================
+\section{Edge Decomposition}
+\label{sec:edge}
+%=================================================================
+
+The expected PnL decomposes as:
+\begin{equation}
+\E[\text{PnL}] = \underbrace{\pi_W}_{\text{signal}} \cdot \underbrace{\E[\text{PnL} \mid W]}_{\text{capture}} + \underbrace{(1-\pi_W)}_{\text{signal}} \cdot \underbrace{\E[\text{PnL} \mid L]}_{\text{protection}}
+\end{equation}
+
+The signal controls $\pi_W$; exit management controls the conditional expectations. Sensitivity:
+\begin{equation}
+\frac{\partial\,\E[\text{PnL}]}{\partial \rho} \gg \frac{\partial\,\E[\text{PnL}]}{\partial \pi_W}
+\end{equation}
+where $\rho = |\E[W]|/|\E[L]|$. The principal improvement lever is $\rho$ (exit management), not $\pi_W$ (signal quality). This is independently confirmed by the Shannon analysis: the trajectory provides 13$\times$ more information than the signal, so optimizing how that information is used (exit management) dominates optimizing the signal.
+
+
+%=================================================================
+\section{Methodology: Signal-Agnostic Evaluation Protocol}
+\label{sec:methodology}
+%=================================================================
+
+The framework provides a falsifiable protocol for evaluating \emph{any} candidate trading signal:
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Dry mode.} Execute virtual trades with the candidate signal. No management, no stops. Close at fixed horizon (e.g., 4h). Log path data every 10--30s.
+\item \textbf{Bimodality test.} With $\geq 50$ trades, compute $\Delta$BIC on MFE. $\Delta$BIC $> 10$: signal produces separable populations. $\Delta$BIC $< 2$: discard.
+\item \textbf{P(win $|$ MFE$_t$, $t$) surface.} If MFE lines separate (high-MFE lines stay above low-MFE lines), there is exploitable structure. If all converge: no edge.
+\item \textbf{Management design.} Exit rules emerge from surface contours: zombie kill where P(win) $< 50\%$, trailing where P(win) $> 70\%$.
+\item \textbf{Monitoring.} Every 50 trades, regenerate $\Delta$BIC. If it degrades, the edge is eroding.
+\end{enumerate}
+
+The deliverable is not a bot --- it is a \textbf{meta-methodology} for detecting, exploiting, and monitoring edge in any market with observable microstructure.
+
+
+%=================================================================
+\section{Empirical Summary}
+\label{sec:results}
+%=================================================================
+
+\begin{table}[H]
+\centering
+\caption{Complete system metrics ($N=83$ trades, 55 symbols, 20 days).}
+\begin{tabular}{lcl}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Derivation} \\
+\midrule
+Unique symbols & 55 & Multi-asset diversification \\
+MFE bimodality $\Delta$BIC & 23.66 & EM mixture (very strong) \\
+MFE distribution & Beta(0.717, 1.919) & Diffusion + absorbing barrier \\
+Weibull shape $k$ & 0.441 & Infant mortality survival \\
+Median escape time & 5.8 min & Path data \\
+MFE threshold accuracy & 82.2\% & Youden $J$ optimal \\
+Signal information & 0.013 bits & 1.3\% of $H(O)$ \\
+Trajectory information & 0.167 bits & 16.9\% of $H(O)$ \\
+Information ratio & 13:1 & Trajectory $\gg$ signal \\
+Shannon-VOI PnL & $+35.8\%$ & $4.2\times$ vs AEPS \\
+Zombie kill improvement & $+46.2\%$ & Intercepts trapped trades \\
+Trade independence $\chi^2$ $p$ & 0.952 & i.i.d.\ confirmed \\
+BTC correlation $\rho$ & $-0.060$ & Market-neutral alpha \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%=================================================================
+\section{Future Work}
+\label{sec:future}
+%=================================================================
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Shadow mode validation ($N = 200$).} Run the Shannon-VOI exit in parallel with AEPS for 100+ trades to obtain out-of-sample performance.
+\item \textbf{Particle filter replacement.} With $N > 200$ path-data trades, calibrate a particle filter (500 particles, two regimes) that uses the complete trajectory --- not just MFE$_t$ --- achieving the Fisher-Neyman sufficiency bound.
+\item \textbf{Beta-Binomial online filter.} Track $\pi_W$ and the cluster separation $(\mu_W - \mu_L)$ in real time via exponentially discounted Bayesian updates. Detect edge erosion trade-by-trade instead of batch $\Delta$BIC.
+\item \textbf{Conditional E[PnL$|$W,$t$] estimation.} Replace the unconditional $\E[\text{PnL}|W]$ with time-dependent estimates to improve the VOI calculation.
+\item \textbf{Multi-market extension.} Apply the evaluation protocol to other venues with mechanical microstructure: funding rate arbitrage on dYdX, liquidation dynamics on GMX, basis trading on CME crypto futures.
+\end{enumerate}
+
+
+%=================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+%=================================================================
+
+We have demonstrated that a trading strategy derived from the Langevin equation of perpetual futures microstructure produces empirically verifiable structure in trade outcomes, with the following chain of results:
+
+The entry signal detects mechanical tension (positioning, not price) and produces genuine bimodality ($\Delta$BIC $= 23.66$) because the underlying process is a diffusion with absorbing barrier (Beta $\alpha < 1$). Trade dynamics follow infant mortality survival (Weibull $k = 0.441$): trades that will succeed do so in the first minutes; waiting for a trapped trade is futile because the hazard decays as $t^{-0.56}$.
+
+The three Langevin damping regimes (overdamped, underdamped, critically damped) correspond exactly to the observed archetypes (Zombie, Grinder, Trap), providing a physical explanation for the bimodal structure that does not rely on statistical fitting.
+
+Shannon information theory reveals that the entry signal contributes 0.013 bits while the price trajectory contributes 0.167 bits --- a 13:1 ratio that quantifies why post-entry management dominates signal quality. An exit system based on the Value of Information achieves $4.2\times$ improvement over threshold-based exits, consistent with the Data Processing Inequality: continuous estimators preserve information that binary thresholds destroy.
+
+Trade outcomes are independent (Markov $p = 0.95$) and uncorrelated with Bitcoin ($\rho = -0.06$), confirming structural alpha from contract microstructure rather than market beta.
+
+The framework's principal contribution is methodological: a falsifiable, signal-agnostic protocol for detecting edge (bimodality test), exploiting it (P(win) surface $\to$ management design), and monitoring its erosion ($\Delta$BIC tracking). The protocol applies to any market where positioning data and path observations are available.
+
+\vfill
+\begin{center}
+\rule{0.5\textwidth}{0.4pt}\\[6pt]
+{\small\itshape Mapplics $\cdot$ $\Psi$-JAM Framework $\cdot$ April 2026}
+\end{center}
+
+%=================================================================
+\begin{thebibliography}{15}
+%=================================================================
+
+\bibitem{shannon1948} C.~E.~Shannon, ``A Mathematical Theory of Communication,'' \textit{Bell System Technical Journal}, 27(3):379--423, 1948.
+
+\bibitem{wald1945} A.~Wald, ``Sequential Tests of Statistical Hypotheses,'' \textit{Ann.\ Math.\ Stat.}, 16(2):117--186, 1945.
+
+\bibitem{kaplan1958} E.~L.~Kaplan and P.~Meier, ``Nonparametric Estimation from Incomplete Observations,'' \textit{JASA}, 53(282):457--481, 1958.
+
+\bibitem{kramers1940} H.~A.~Kramers, ``Brownian Motion in a Field of Force and the Diffusion Model of Chemical Reactions,'' \textit{Physica}, 7(4):284--304, 1940.
+
+\bibitem{cover2006} T.~M.~Cover and J.~A.~Thomas, \textit{Elements of Information Theory}, 2nd ed., Wiley, 2006.
+
+\bibitem{hartigan1985} J.~A.~Hartigan and P.~M.~Hartigan, ``The Dip Test of Unimodality,'' \textit{Ann.\ Stat.}, 13(1):70--84, 1985.
+
+\bibitem{dempster1977} A.~P.~Dempster, N.~M.~Laird, D.~B.~Rubin, ``Maximum Likelihood from Incomplete Data via the EM Algorithm,'' \textit{JRSS-B}, 39(1):1--38, 1977.
+
+\bibitem{tartakovsky2014} A.~Tartakovsky, I.~Nikiforov, M.~Basseville, \textit{Sequential Analysis: Hypothesis Testing and Changepoint Detection}, CRC Press, 2014.
+
+\bibitem{leung2021} T.~Leung and H.~Zhang, ``Optimal Trading with a Trailing Stop,'' \textit{Appl.\ Math.\ Optim.}, 83:669--698, 2021.
+
+\bibitem{donier2015} J.~Donier and J.-P.~Bouchaud, ``Why Do Markets Crash? Bitcoin Data Offers Unprecedented Insights,'' \textit{PLoS ONE}, 10(10), 2015.
+
+\bibitem{lo2004} A.~W.~Lo, ``The Adaptive Markets Hypothesis,'' \textit{J.\ Portfolio Mgmt.}, 30(5):15--29, 2004.
+
+\bibitem{radon1917} J.~Radon, ``On the Determination of Functions from Their Integral Values along Certain Manifolds,'' \textit{Math.\ Phys.\ Klasse}, 69:262--277, 1917.
+
+\bibitem{howard1966} R.~A.~Howard, ``Information Value Theory,'' \textit{IEEE Trans.\ Systems Science and Cybernetics}, 2(1):22--26, 1966.
+
+\bibitem{fisher1922} R.~A.~Fisher, ``On the Mathematical Foundations of Theoretical Statistics,'' \textit{Phil.\ Trans.\ Royal Soc.\ A}, 222:309--368, 1922.
+
+\bibitem{neyman1933} J.~Neyman, ``On the Problem of the Most Efficient Tests of Statistical Hypotheses,'' \textit{Phil.\ Trans.\ Royal Soc.\ A}, 231:289--337, 1933.
+
+\end{thebibliography}
+
+\end{document}

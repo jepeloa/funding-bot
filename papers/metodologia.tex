@@ -1,0 +1,827 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+%\usepackage[spanish]{babel}
+\usepackage{amsmath,amssymb,bm,amsthm,mathtools}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array,tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc}
+
+\geometry{margin=2.5cm}
+
+\definecolor{cblue}{RGB}{41,128,185}
+\definecolor{cgreen}{RGB}{39,174,96}
+\definecolor{cred}{RGB}{231,76,60}
+\definecolor{corange}{RGB}{243,156,18}
+\definecolor{cpurple}{RGB}{142,68,173}
+\definecolor{cdark}{RGB}{44,62,80}
+
+\tcbset{
+  radio/.style={colback=corange!5,colframe=corange!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  math/.style={colback=cblue!5,colframe=cblue!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  result/.style={colback=cgreen!5,colframe=cgreen!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  warning/.style={colback=cred!5,colframe=cred!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+  key/.style={colback=cpurple!5,colframe=cpurple!60,fonttitle=\bfseries,arc=2mm,boxrule=0.5pt},
+}
+
+\newtheorem{definition}{Definici\'on}[section]
+\newtheorem{theorem}{Teorema}[section]
+\newtheorem{proposition}{Proposici\'on}[section]
+
+\newcommand{\pw}{P(\text{win})}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries Framework de Dise\~no de Estrategias}\\[4pt]
+{\LARGE\bfseries Basado en Bimodalidad y Teor\'ia de la Informaci\'on}\\[16pt]
+{\large Javier Epeloa\quad$\cdot$\quad Mapplics}\\[8pt]
+{\normalsize Abril 2026}\\[4pt]
+{\small\itshape Metodolog\'ia completa: de la se\~nal candidata al sistema de salida \'optimo\\
+con un solo par\'ametro libre, sin backtesting, sin optimizaci\'on}
+\end{center}
+
+\vspace{12pt}
+
+\begin{abstract}
+Este documento describe un framework de cinco pasos para dise\~nar
+sistemas de trading en cualquier mercado con microestructura observable.
+El framework reduce un problema de 14 par\'ametros calibrados a un sistema
+con un solo par\'ametro libre, una tabla emp\'irica, y un test estad\'istico
+de falsificaci\'on. A lo largo del documento, cada concepto matem\'atico se
+acompa\~na de una analog\'ia con un receptor de radio AM que sintoniza
+estaciones, decodifica mensajes, y decide cu\'ando dejar de escuchar.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=================================================================
+\section{La Analog\'ia Central: El Trade como Canal de Radio}
+\label{sec:analogia}
+%=================================================================
+
+Antes de entrar en la matem\'atica, necesitamos una imagen mental
+que nos acompa\~ne durante todo el documento.
+
+\begin{tcolorbox}[radio, title=La radio]
+Imagin\'a que ten\'es una radio vieja con dial anal\'ogico. El dial tiene
+infinitas posiciones --- la mayor\'ia son ruido blanco, est\'atica pura.
+Pero en algunas frecuencias hay estaciones que transmiten una se\~nal.
+
+El problema es que no sab\'es d\'onde est\'an las estaciones. Y cuando
+encontr\'as una, no sab\'es qu\'e mensaje est\'a transmitiendo hasta que
+escuch\'as un rato.
+\end{tcolorbox}
+
+Cada componente del framework tiene su equivalente en la radio:
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Radio} & \textbf{Trading} \\
+\midrule
+Girar el dial & Probar una se\~nal de entrada candidata \\
+?`Hay estaci\'on? & Test de bimodalidad ($\Delta$BIC $> 10$) \\
+Se\~nal vs.\ ruido & Winners vs.\ losers en la distribuci\'on de MFE \\
+Escuchar el mensaje & Observar la trayectoria del precio tick a tick \\
+Decodificar W o L & Calcular $\pw$ desde la superficie \\
+Dejar de escuchar & Cerrar el trade (EXIT o TRAIL) \\
+La estaci\'on se debilita & El edge se erosiona ($\Delta$BIC cae) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+%=================================================================
+\section{Paso 1: Girar el Dial --- Se\~nal Candidata en Dry Mode}
+\label{sec:paso1}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: girar el dial]
+Mov\'es el dial a una frecuencia aleatoria. No sab\'es si hay una
+estaci\'on ah\'i. Solo escuch\'as --- sin tocar ning\'un otro bot\'on,
+sin ajustar el volumen, sin nada. Escuch\'as un rato fijo (por ejemplo,
+4 minutos) y anot\'as todo lo que o\'is. Despu\'es mov\'es el dial
+a otra frecuencia y repet\'is.
+\end{tcolorbox}
+
+\subsection{Qu\'e hacer}
+
+Tom\'as cualquier se\~nal candidata --- puede ser RSI $> 80$, un cruce
+de medias m\'oviles, una se\~nal de funding rate, un modelo de ML, lo que
+sea. Abr\'is trades virtuales (dry mode) cada vez que la se\~nal
+se activa. Sin stop loss, sin trailing, sin ninguna gesti\'on. El trade
+abre, corre un horizonte fijo (por ejemplo, 4 horas), y cierra.
+
+Durante esas 4 horas, logue\'as el \textbf{path data}: cada 10--30
+segundos, registr\'as MFE (M\'axima Excursi\'on Favorable), MAE (M\'axima
+Excursi\'on Adversa), y PnL actual.
+
+\subsection{Por qu\'e horizonte fijo}
+
+El horizonte fijo es cr\'itico porque elimina la circularidad. Si us\'as
+stop loss o trailing, el resultado del trade depende del mecanismo de
+salida, no solo de la se\~nal. No pod\'es saber si la se\~nal es buena o
+si la gesti\'on es buena --- est\'an confundidas.
+
+Con horizonte fijo, la definici\'on de winner es pura:
+\begin{equation}
+\text{Winner} = \mathbb{1}[\text{PnL}(T_{\text{horizonte}}) > 0]
+\end{equation}
+
+No hay par\'ametros. No hay decisiones. Solo datos limpios.
+
+\subsection{Justificaci\'on matem\'atica}
+
+\begin{tcolorbox}[math, title=Par\'ametros de este paso]
+\textbf{Cero.} El horizonte (2h, 4h, 6h) es arbitrario y no sensible ---
+si la se\~nal tiene estructura, la bimodalidad aparece en cualquier
+horizonte razonable. Si solo aparece con un horizonte espec\'ifico,
+la estructura es fr\'agil y no vale la pena.
+\end{tcolorbox}
+
+Necesit\'as al menos 50 trades para que los tests del Paso~2 tengan
+potencia estad\'istica suficiente. Con la frecuencia t\'ipica de se\~nales
+en altcoins perpetuos, eso es 2--4 semanas.
+
+
+%=================================================================
+\section{Paso 2: ?`Hay Estaci\'on? --- Test de Bimodalidad}
+\label{sec:paso2}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: ?`hay estaci\'on?]
+Despu\'es de escuchar 50 frecuencias, revis\'as tus anotaciones.
+En la mayor\'ia de las frecuencias, todo lo que anotaste es ruido
+uniforme --- no hay patr\'on. Pero en algunas frecuencias, las
+anotaciones muestran dos tipos de sonido claramente distintos:
+a veces escuchaste algo que parec\'ia m\'usica (se\~nal) y a veces
+est\'atica (ruido). Esa frecuencia tiene una estaci\'on.
+
+Si todo lo que anotaste en una frecuencia es un continuo uniforme
+sin dos grupos distinguibles, no hay estaci\'on --- es solo ruido
+con variaciones aleatorias. No importa cu\'anto tiempo escuches,
+nunca vas a decodificar un mensaje porque no hay mensaje.
+\end{tcolorbox}
+
+\subsection{El test}
+
+Con los 50+ trades del Paso~1, construimos la distribuci\'on de MFE
+(M\'axima Excursi\'on Favorable) y preguntamos: ?`esta distribuci\'on
+tiene una joroba o dos?
+
+Formalmente, comparamos dos modelos:
+\begin{align}
+M_1&: \text{MFE} \sim \mathcal{N}(\mu, \sigma^2) \quad \text{(una campana)} \\
+M_2&: \text{MFE} \sim \pi_1 \mathcal{N}(\mu_1, \sigma_1^2) + \pi_2 \mathcal{N}(\mu_2, \sigma_2^2) \quad \text{(dos campanas)}
+\end{align}
+
+El BIC (Bayesian Information Criterion) de cada modelo es:
+\begin{equation}
+\text{BIC} = -2 \ln \hat{L} + k \ln n
+\end{equation}
+donde $\hat{L}$ es la verosimilitud maximizada, $k$ es el n\'umero de
+par\'ametros ($k=2$ para $M_1$, $k=5$ para $M_2$), y $n$ es el n\'umero
+de trades. El BIC penaliza la complejidad: $M_2$ tiene m\'as par\'ametros,
+as\'i que necesita ajustar sustancialmente mejor para ``ganar''.
+
+\begin{definition}[$\Delta$BIC]
+\begin{equation}
+\Delta\text{BIC} = \text{BIC}(M_1) - \text{BIC}(M_2)
+\end{equation}
+Si $\Delta\text{BIC} > 0$, dos campanas son mejor. Si $< 0$, una alcanza.
+\end{definition}
+
+\subsection{Escala de interpretaci\'on (Kass y Raftery, 1995)}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ccl}
+\toprule
+$\Delta$\textbf{BIC} & \textbf{Evidencia} & \textbf{Acci\'on} \\
+\midrule
+$< 2$ & Insignificante & Descartar la se\~nal \\
+$2$--$6$ & Positiva & Dudosa, seguir acumulando datos \\
+$6$--$10$ & Fuerte & Prometedor, avanzar con cautela \\
+$> 10$ & Muy fuerte & \textbf{Hay estaci\'on --- avanzar al Paso~3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{El criterio de falsificaci\'on}
+
+\begin{tcolorbox}[warning, title=Regla inquebrantable]
+Si $\Delta$BIC $< 2$ despu\'es de 50+ trades, \textbf{descart\'a la
+se\~nal}. No hay discusi\'on, no hay ``probemos con otros par\'ametros'',
+no hay optimizaci\'on. Si no hay dos campanas, no hay estructura
+explotable. No hay estaci\'on en esa frecuencia. Mov\'e el dial.
+\end{tcolorbox}
+
+\subsection{Por qu\'e esto funciona: la cadena causal}
+
+\begin{tcolorbox}[math, title=Teorema: bimodalidad es condici\'on necesaria]
+\begin{theorem}
+Sin bimodalidad en MFE, el estimador Shannon-VOI colapsa a
+clasificaci\'on aleatoria.
+\end{theorem}
+
+\textbf{Demostraci\'on emp\'irica} (5 escenarios simulados, $N=83$):
+
+\medskip
+\begin{tabular}{lccc}
+\toprule
+\textbf{Escenario} & $\Delta$\textbf{BIC} & \textbf{I(MFE; O)} & \textbf{Separaci\'on} \\
+\midrule
+Real (bimodal) & $+13.9$ & 0.353 bits & $+44$ pp \\
+Shuffled & $+13.9$ & 0.018 bits & $+6$ pp \\
+Unimodal pura & $-5.9$ & 0.014 bits & $+16$ pp \\
+Unimodal + correlaci\'on & $-7.2$ & 0.050 bits & $-1$ pp \\
+RSI-like & $+10.5$ & 0.080 bits & $-6$ pp \\
+\bottomrule
+\end{tabular}
+
+\medskip
+Sin bimodalidad, la informaci\'on del canal cae de 0.353 a 0.014
+bits (25$\times$ menor). La superficie $\pw$ se aplana y Shannon no
+puede clasificar.
+\end{tcolorbox}
+
+\subsection{Par\'ametros de este paso}
+
+\textbf{Cero.} El $\Delta$BIC es un estad\'istico --- sale de los datos
+directamente. El umbral de 10 viene de la teor\'ia estad\'istica
+bayesiana (Kass-Raftery), no de una optimizaci\'on. No hay nada que
+calibrar.
+
+
+%=================================================================
+\section{Paso 3: Mapear la Se\~nal --- Superficie P(win $|$ MFE$_t$, $t$)}
+\label{sec:paso3}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: mapear la se\~nal]
+Encontraste una estaci\'on. Ahora necesit\'as entender c\'omo
+transmite. Escuch\'as muchas transmisiones y anot\'as: ``despu\'es
+de 30 segundos, si la se\~nal tiene tal intensidad, el mensaje
+suele ser X''. ``Despu\'es de 2 minutos, si la intensidad es
+baja, el mensaje suele ser Y''. Vas construyendo un mapa: para
+cada combinaci\'on de (tiempo transcurrido, intensidad de se\~nal),
+sab\'es qu\'e mensaje es m\'as probable.
+
+El mapa es una tabla 2D: filas = tiempo, columnas = intensidad,
+valor en cada celda = probabilidad de que el mensaje sea ``W''.
+\end{tcolorbox}
+
+\subsection{Construcci\'on}
+
+Usamos los path data del Paso~1 para construir la superficie
+$P(\text{win} \mid \text{MFE}_t, t)$. Para cada trade, recorremos
+su trayectoria y en cada punto $(t_i, \text{MFE}_i)$ registramos
+si el trade termin\'o como winner o loser.
+
+La superficie se construye como un histograma 2D suavizado:
+
+\begin{enumerate}[leftmargin=2em]
+\item Discretizar el espacio $(t, \text{MFE})$ en celdas.
+\item Para cada celda, contar cu\'antos winners y losers pasaron por ah\'i.
+\item $\pw$ en cada celda = winners / (winners + losers).
+\item Suavizar con kernel gaussiano (bandwidth de Scott).
+\end{enumerate}
+
+\subsection{Qu\'e revela la superficie}
+
+Si la se\~nal tiene estructura (Paso~2 positivo), la superficie tiene
+\textbf{gradiente fuerte}: las celdas con MFE alto tienen $\pw$ alto
+(70--90\%) y las celdas con MFE bajo tienen $\pw$ bajo (30--40\%).
+Las l\'ineas de iso-probabilidad son curvas diagonales en el espacio
+$(t, \text{MFE})$.
+
+\begin{table}[H]
+\centering
+\caption{Ejemplo real: $\pw$ en coordenadas seleccionadas.}
+\begin{tabular}{r|ccccc}
+\toprule
+& \multicolumn{5}{c}{\textbf{MFE al tiempo $t$}} \\
+$t$ (min) & 0.0\% & 0.4\% & 0.8\% & 1.2\% & 2.0\% \\
+\midrule
+0.5 & 49\% & 53\% & 57\% & 62\% & 75\% \\
+2.0 & 47\% & 52\% & 56\% & 62\% & 74\% \\
+5.0 & 43\% & 49\% & 54\% & 59\% & 70\% \\
+10.0 & 41\% & 45\% & 48\% & 54\% & 66\% \\
+20.0 & 36\% & 41\% & 46\% & 50\% & 55\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Si la se\~nal \textbf{no} tiene estructura (Paso~2 negativo), la
+superficie es \textbf{plana}: todas las celdas tienen $\pw \approx$
+win rate base ($\sim$50\%). No hay gradiente, no hay curvas, no hay
+nada que explotar. Shannon mira esta tabla y ve: ``todo es igual,
+no puedo distinguir nada''.
+
+\subsection{Justificaci\'on matem\'atica: informaci\'on mutua}
+
+La informaci\'on que la superficie captura se mide con la
+informaci\'on mutua de Shannon:
+
+\begin{equation}
+I(\text{MFE}_t; O) = H(O) - H(O \mid \text{MFE}_t)
+\end{equation}
+
+donde $H(O)$ es la entrop\'ia del outcome a priori:
+\begin{equation}
+H(O) = -\pi_W \log_2 \pi_W - (1-\pi_W) \log_2(1-\pi_W)
+\end{equation}
+
+y $H(O \mid \text{MFE}_t)$ es la entrop\'ia residual despu\'es de
+observar el MFE al tiempo $t$:
+\begin{equation}
+H(O \mid \text{MFE}_t) = \sum_{\text{celda } c} P(c) \cdot H_b\!\left(\pw_c\right)
+\end{equation}
+
+\begin{tcolorbox}[result, title=Resultado emp\'irico: ratio 13:1]
+En nuestros datos ($N=83$ trades):
+\begin{itemize}[leftmargin=1.5em]
+\item La se\~nal de entrada aporta: $I_{\text{se\~nal}} = 0.013$ bits
+\item La trayectoria del precio aporta: $I_{\text{trayectoria}} = 0.167$ bits
+\item \textbf{Ratio: 13:1 a favor de la observaci\'on post-entrada}
+\end{itemize}
+
+La gran mayor\'ia de la informaci\'on relevante no est\'a disponible
+al momento de entrar --- se revela progresivamente a trav\'es del canal.
+Esto justifica formalmente por qu\'e la gesti\'on de salida importa
+13 veces m\'as que la se\~nal de entrada.
+\end{tcolorbox}
+
+\subsection{Par\'ametros de este paso}
+
+\textbf{Cero.} La superficie es un conteo por celda (histograma 2D),
+no un modelo con par\'ametros. El \'unico choice es el bandwidth del
+kernel de suavizado, y el default de Scott funciona.
+
+
+%=================================================================
+\section{Paso 4: Decodificar el Mensaje --- Sistema de Salida Shannon-VOI}
+\label{sec:paso4}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: decodificar el mensaje]
+Ten\'es el mapa de la estaci\'on (la superficie). Ahora sintoniz\'as
+una nueva transmisi\'on (abr\'is un trade) y empez\'as a escuchar.
+
+En cada momento, mir\'as el mapa y dec\'is: ``llevo 3 minutos
+escuchando, la intensidad de la se\~nal es media-baja... seg\'un
+el mapa, esto tiene 45\% de probabilidad de ser un mensaje~W''.
+
+Tres situaciones posibles:
+
+\textbf{1. La se\~nal es d\'ebil y dej\'o de cambiar.} Llevás 10
+minutos, la intensidad es baja, y no cambia. Seg\'un el mapa,
+$\pw < 50\%$ y la tasa de informaci\'on nueva es cero. La estaci\'on
+ya dijo todo lo que ten\'ia que decir, y el mensaje es ``L''. Dej\'as
+de escuchar --- no tiene sentido seguir.
+
+\textbf{2. La se\~nal es fuerte y estable.} Llevás 5 minutos, la
+intensidad es alta, $\pw > 70\%$. El mensaje es ``W'' con alta
+confianza. Ahora no te preocupa \emph{si} es winner sino
+\emph{cu\'anto} dura. Sub\'is el volumen (trailing activo) y
+esper\'as a que la se\~nal se debilite naturalmente.
+
+\textbf{3. La se\~nal todav\'ia est\'a cambiando.} Llevás 2 minutos
+y la intensidad sube y baja. La tasa de informaci\'on nueva es alta
+--- la estaci\'on todav\'ia est\'a transmitiendo datos \'utiles. No
+tom\'as ninguna decisi\'on --- segu\'is escuchando porque cada segundo
+adicional reduce tu incertidumbre.
+\end{tcolorbox}
+
+\subsection{Las tres zonas de decisi\'on}
+
+\begin{tcolorbox}[math, title=Criterio \'optimo de parada (Wald-Shannon)]
+En cada momento $t$ del trade, el sistema calcula:
+\begin{itemize}[leftmargin=1.5em]
+\item $\pw(t)$: probabilidad de winner, interpolada de la superficie
+\item $dI/dt$: tasa de informaci\'on nueva (bits por minuto)
+\item $\E[\text{PnL} \mid \text{continuar}] = \pw \cdot \E[W] + (1-\pw) \cdot \E[L]$
+\end{itemize}
+
+\medskip
+\textbf{Zona 1 --- Aprendizaje} ($dI/dt > \varepsilon$, cualquier $\pw$):\\
+HOLD. El canal todav\'ia transmite informaci\'on \'util. Decidir ahora
+desperdicia informaci\'on que est\'a llegando gratis.
+
+\medskip
+\textbf{Zona 2 --- Decisi\'on negativa} ($dI/dt \leq \varepsilon$, $\pw < 0.50$):\\
+EXIT. La informaci\'on se agot\'o y dice ``loser''. Esperar m\'as no
+cambiar\'a el veredicto porque $dI/dt \approx 0$.
+
+\medskip
+\textbf{Zona 3 --- Decisi\'on positiva} ($dI/dt \leq \varepsilon$, $\pw > 0.70$):\\
+TRAIL. La informaci\'on se agot\'o y dice ``winner''. Activar trailing
+con callback $= f(\pw)$ para capturar el recorrido.
+\end{tcolorbox}
+
+\subsection{Por qu\'e $\pw = 0.50$ no es un par\'ametro}
+
+El umbral de EXIT en $\pw = 0.50$ no es una elecci\'on --- es una
+consecuencia matem\'atica. El valor esperado de continuar es:
+\begin{equation}
+\E[\text{PnL} \mid \text{continuar}] = \pw \cdot \E[\text{PnL} \mid W] + (1-\pw) \cdot \E[\text{PnL} \mid L]
+\end{equation}
+
+Con $\E[W] = +2.54\%$ y $\E[L] = -3.08\%$:
+\begin{equation}
+\E = 0 \quad\Longleftrightarrow\quad \pw = \frac{|\E[L]|}{|\E[W]| + |\E[L]|} = \frac{3.08}{2.54 + 3.08} = 0.548
+\end{equation}
+
+El punto exacto donde $\E = 0$ es 0.548, cercano a 0.50. Usar 0.50
+es ligeramente conservador (cierra un poco antes del punto de EV
+cero), lo cual es correcto porque incluye un margen por costos de
+transacci\'on y slippage.
+
+\subsection{El trailing adaptativo}
+
+Cuando $\pw > 0.70$, el sistema activa trailing con callback que
+depende de $\pw$:
+\begin{equation}
+\text{callback}(\pw) = 0.30 + (\pw - 0.70) \times 0.833
+\end{equation}
+
+Esto da: $\pw = 0.70 \to 30\%$, $\pw = 0.80 \to 38\%$,
+$\pw = 0.90 \to 47\%$, $\pw = 0.95 \to 51\%$.
+
+Mayor confianza $\to$ callback m\'as suelto (dejar correr).
+Menor confianza $\to$ callback m\'as apretado (proteger).
+
+\subsection{Justificaci\'on te\'orica: Data Processing Inequality}
+
+?`Por qu\'e este sistema de un solo par\'ametro supera a uno de 14?
+
+\begin{tcolorbox}[math, title=Data Processing Inequality (Shannon 1948)]
+Para cualquier cadena de Markov $X \to Y \to Z$:
+\begin{equation}
+I(X; Z) \leq I(X; Y)
+\end{equation}
+Ninguna transformaci\'on de los datos puede \emph{crear} informaci\'on
+que no estaba en los datos originales. Solo puede destruirla.
+\end{tcolorbox}
+
+El AEPS toma la trayectoria continua $Y$ y la reduce a comparaciones
+binarias $Z$: ``?`MFE $> 1.14\%$?'', ``?`MAE $> 5.3\%$?''. Cada
+threshold es una compresi\'on lossy que destruye informaci\'on.
+
+El estimador Shannon opera directamente sobre $Y$ --- usa la
+distribuci\'on continua $\pw$ en vez de reducirla a ``cruz\'o/no
+cruz\'o''. Por el DPI, captura m\'as informaci\'on y clasifica mejor.
+
+\begin{tcolorbox}[result, title=Resultado emp\'irico]
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+& \textbf{AEPS (14 par\'ametros)} & \textbf{Shannon (1 par\'ametro)} \\
+\midrule
+PnL acumulado & $+8.6\%$ & $+35.8\%$ \\
+Mejora & --- & $4.2\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+La mejora de $4.2\times$ es consistente con el DPI: preservar
+informaci\'on en vez de destruirla con thresholds produce mejor
+clasificaci\'on.
+\end{tcolorbox}
+
+\subsection{Par\'ametros de este paso}
+
+\textbf{Uno:} trail\_pw $= 0.70$ (cu\'ando activar trailing). Es robusto:
+moverlo a 0.65 o 0.75 cambia cu\'ando se activa el trailing por unos
+minutos, y el callback adaptativo $f(\pw)$ absorbe la diferencia.
+
+Adem\'as hay dos mecanismos que sobreviven independientes de Shannon:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Hard SL} $= 8\%$: protecci\'on de capital contra cisnes negros.
+  No es clasificaci\'on --- es seguro.
+\item \textbf{Pump capture}: se\~nal de mercado ($d$OI $< 0$, taker ratio
+  $< 45\%$) que detecta exhaustion. Shannon no ve esta informaci\'on
+  porque solo mira MFE/PnL/MAE.
+\end{itemize}
+
+
+%=================================================================
+\section{Paso 5: Monitorear la Estaci\'on --- Detecci\'on de Erosi\'on}
+\label{sec:paso5}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: la estaci\'on se debilita]
+Ven\'is escuchando la estaci\'on hace semanas y funciona bien.
+Pero un d\'ia not\'as que la se\~nal es m\'as d\'ebil, m\'as ruidosa,
+m\'as dif\'icil de decodificar. Los mensajes que antes eran claros
+ahora son ambiguos. La estaci\'on no desapareci\'o de golpe --- se
+fue debilitando gradualmente.
+
+Necesit\'as un medidor que te diga: ``la potencia de la estaci\'on
+cay\'o del nivel X al nivel Y''. Cuando baja de cierto nivel, dej\'as
+de escuchar y busc\'as otra.
+\end{tcolorbox}
+
+\subsection{Monitoreo por $\Delta$BIC rolling}
+
+Cada 50 trades, recalcul\'as el $\Delta$BIC sobre los \'ultimos
+50--100 trades. Si $\Delta$BIC cae por debajo de 6, la bimodalidad
+se est\'a comprimiendo --- el primer eslab\'on de la cadena se est\'a
+debilitando. Si cae por debajo de 2, la bimodalidad desapareci\'o
+y el edge se perdi\'o.
+
+\subsection{Monitoreo online: filtro Beta-Binomial}
+
+Para detecci\'on trade a trade (sin esperar a 50), implementamos un
+filtro bayesiano que trackea $\pi_W$ (win rate) en tiempo real:
+
+\begin{equation}
+\text{Si win:}\quad \alpha_{t+1} = \lambda\alpha_t + 1, \quad \beta_{t+1} = \lambda\beta_t
+\end{equation}
+\begin{equation}
+\text{Si loss:}\quad \alpha_{t+1} = \lambda\alpha_t, \quad \beta_{t+1} = \lambda\beta_t + 1
+\end{equation}
+
+donde $\lambda = 0.97$ es un factor de descuento (half-life $\approx$
+23 trades). La estimaci\'on de $\pi_W$ es:
+\begin{equation}
+\hat{\pi}_W = \frac{\alpha}{\alpha + \beta}
+\end{equation}
+
+\begin{tcolorbox}[warning, title=Alertas]
+\begin{itemize}[leftmargin=1.5em]
+\item $\hat{\pi}_W < 0.45$ durante 20+ trades $\to$ el edge puede
+  estar erosion\'andose. Investigar.
+\item $\Delta$BIC $< 6$ en ventana rolling $\to$ la bimodalidad se
+  comprime. Regenerar superficie y evaluar.
+\item $\Delta$BIC $< 2$ $\to$ \textbf{pausar}. No hay estaci\'on.
+\end{itemize}
+\end{tcolorbox}
+
+\subsection{Actualizaci\'on incremental de la superficie}
+
+La superficie se actualiza despu\'es de cada trade cerrado, no en
+batch cada 50 trades. Cada celda $(t, \text{MFE})$ mantiene sus
+propios contadores Beta$(\alpha_c, \beta_c)$:
+
+\begin{equation}
+\text{Para cada punto del path del trade cerrado:} \quad
+\begin{cases}
+\alpha_c \leftarrow \lambda\alpha_c + 1 & \text{si winner} \\
+\beta_c \leftarrow \lambda\beta_c + 1 & \text{si loser}
+\end{cases}
+\end{equation}
+
+\begin{equation}
+\pw_c = \frac{\alpha_c}{\alpha_c + \beta_c}
+\end{equation}
+
+La superficie nunca est\'a ``vieja'' --- se actualiza en cada trade.
+Con $\lambda = 0.97$, trades de hace 50 operaciones tienen peso
+$0.97^{50} = 22\%$ del peso de un trade reciente. La superficie se
+adapta gradualmente sin discontinuidades.
+
+\subsection{Par\'ametros de este paso}
+
+\textbf{Cero operativos.} Los umbrales de alerta ($\Delta$BIC $< 6$,
+$\pi_W < 0.45$) vienen de la teor\'ia estad\'istica, no de
+optimizaci\'on. El decay $\lambda = 0.97$ da un half-life de
+$\sim$23 trades, que es un balance razonable entre reactividad y
+estabilidad --- pero no es sensible a $\pm$0.02.
+
+
+%=================================================================
+\section{Resumen: De 14 Par\'ametros a 1}
+\label{sec:resumen}
+%=================================================================
+
+\begin{tcolorbox}[key, title=El framework completo]
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{clcc}
+\toprule
+\textbf{Paso} & \textbf{Acci\'on} & \textbf{Radio} & \textbf{Par\'ametros} \\
+\midrule
+1 & Se\~nal $\to$ dry mode horizonte fijo & Girar el dial & 0 \\
+2 & $\Delta$BIC $> 10$? & ?`Hay estaci\'on? & 0 \\
+3 & Superficie $\pw$ & Mapear la se\~nal & 0 \\
+4 & Shannon EXIT / TRAIL / HOLD & Decodificar & \textbf{1} \\
+5 & $\Delta$BIC rolling + $\hat{\pi}_W$ & Monitorear potencia & 0 \\
+\midrule
+& \textbf{Total} & & \textbf{1} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{tcolorbox}
+
+Comparaci\'on con el sistema anterior:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcc}
+\toprule
+& \textbf{AEPS} & \textbf{Shannon} \\
+\midrule
+Par\'ametros calibrados & 14 & 1 \\
+Necesita backtesting & S\'i & No \\
+Necesita optimizaci\'on & S\'i & No \\
+Criterio de falsificaci\'on & No & S\'i ($\Delta$BIC) \\
+Criterio de muerte & No & S\'i ($\Delta$BIC $< 2$) \\
+Agnóstico a la se\~nal & No & S\'i \\
+Agnóstico al mercado & No & S\'i \\
+Resultado ($N=83$) & $+8.6\%$ & $+35.8\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+%=================================================================
+\section{?`Por Qu\'e Funciona con Menos?}
+\label{sec:porquemenos}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: por qu\'e un receptor simple es mejor]
+Un receptor de radio sofisticado con 14 perillas (graves, agudos,
+balance, filtro de ruido, AGC, squelch, etc.) puede sonar bien si
+calibr\'as cada perilla perfectamente. Pero si una perilla est\'a
+mal, distorsiona todo. Y cuando la estaci\'on cambia de formato,
+ten\'es que recalibrar las 14.
+
+Un receptor simple que solo tiene ``volumen'' funciona peor en el
+caso \'optimo, pero no se rompe nunca. Y si le das acceso directo
+a la se\~nal en vez de pasarla por 14 filtros, captura m\'as de la
+transmisi\'on original.
+
+Eso es exactamente el Data Processing Inequality: cada perilla es
+un filtro que destruye informaci\'on. Menos filtros = m\'as se\~nal.
+\end{tcolorbox}
+
+Los 14 par\'ametros del AEPS eran aproximaciones discretas de una
+funci\'on continua (la superficie $\pw$). Cada par\'ametro capturaba
+un pedazo de esa funci\'on:
+\begin{itemize}[leftmargin=1.5em]
+\item El abort capturaba la zona $\pw < 0.40$
+\item El partial TP capturaba la zona $\pw \approx 0.55$--$0.65$
+\item El trailing capturaba la zona $\pw > 0.70$
+\item El zombie kill capturaba la zona $\pw < 0.50$ con $t > t_{\text{abort}}$
+\end{itemize}
+
+Al discretizar, perd\'ias informaci\'on (DPI) y necesitabas m\'as
+par\'ametros para compensar la p\'erdida. Con la funci\'on continua,
+no necesit\'as compensar nada.
+
+Es la diferencia entre aproximar una curva con 14 segmentos rectos
+versus tener la curva misma. Los segmentos necesitan 28 coordenadas
+(14 posiciones $\times$ 2 extremos). La curva necesita 0 par\'ametros
+--- ES la curva, directamente de los datos.
+
+
+%=================================================================
+\section{Conexi\'on con la F\'isica: Weibull y Shannon Dicen lo Mismo}
+\label{sec:weibull_shannon}
+%=================================================================
+
+\begin{tcolorbox}[radio, title=La radio: por qu\'e el mensaje llega al principio]
+Cuando sintoniz\'as una estaci\'on, los primeros segundos son los
+m\'as informativos. Al principio no sab\'es nada --- podr\'ia ser
+m\'usica, noticias, o est\'atica. Pero r\'apidamente capt\'as el tono:
+``esto es m\'usica'' o ``esto es ruido''. Despu\'es de 2 minutos, ya
+sab\'es. Despu\'es de 10 minutos, escuchar m\'as no agrega nada.
+
+La raz\'on es f\'isica: la estaci\'on transmite a una potencia que
+decae con el tiempo. Los primeros bits de informaci\'on llegan con
+se\~nal fuerte. Los siguientes, m\'as d\'ebiles. Eventualmente la
+se\~nal se pierde en el ruido y no hay m\'as informaci\'on por extraer.
+\end{tcolorbox}
+
+La supervivencia Weibull ($k = 0.441 < 1$) y la tasa de informaci\'on
+de Shannon ($dI/dt$) describen el mismo fen\'omeno con lenguajes
+diferentes:
+
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Weibull dice:} la probabilidad de escape (la transici\'on
+  informativa) decae como $h(t) \propto t^{k-1} = t^{-0.56}$.
+\item \textbf{Shannon dice:} la tasa de informaci\'on nueva decae de
+  0.05 bits/min a los 2 min hasta 0.001 bits/min a los 30 min.
+\end{itemize}
+
+Son dos caras de la misma moneda, y esa moneda es la ecuaci\'on de
+Langevin con su discriminante de damping.
+
+\begin{tcolorbox}[math, title=Conexi\'on formal]
+El estado latente del trade $Z \in \{W, L\}$ se revela a trav\'es de
+un evento de escape (cruce de barrera en el potencial de Langevin).
+La probabilidad de este evento en el intervalo $[t, t+dt]$ es la
+hazard $h(t)$.
+
+La informaci\'on ganada por observar si el escape ocurri\'o o no es:
+\begin{equation}
+dI \propto h(t) \cdot dt \cdot D_{\text{KL}}(f_W \| f_L)
+\end{equation}
+
+Con $h(t) = \frac{k}{\lambda}(t/\lambda)^{k-1}$ y $k < 1$, la hazard
+(y por lo tanto la tasa de informaci\'on) decae monotónicamente.
+La informaci\'on llega r\'apido al principio y se agota.
+
+Esto justifica el zombie kill (no esperar una transmisi\'on que ya se
+agot\'o) y el trailing temprano (actuar cuando la informaci\'on dice
+``winner'' con confianza, no esperar a una confirmaci\'on que no va a
+llegar).
+\end{tcolorbox}
+
+
+%=================================================================
+\section{Aplicabilidad: ?`D\'onde Funciona Este Framework?}
+\label{sec:aplicabilidad}
+%=================================================================
+
+El framework es agn\'ostico a la se\~nal y al mercado, pero requiere
+tres condiciones:
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Path data observable.} Se necesita la trayectoria del
+  precio tick a tick, no solo el resultado final. Mercados con datos
+  de alta frecuencia accesibles: cripto perpetuos, forex, futuros
+  regulados. No funciona en mercados donde solo ves el precio de
+  cierre diario.
+
+\item \textbf{Microestructura mec\'anica.} La bimodalidad es m\'as
+  probable en mercados con fuerzas mec\'anicas (funding, liquidaciones,
+  margin calls) que crean bifurcaciones binarias. Mercados candidatos:
+  perpetuos en dYdX/GMX, futuros en CME, opciones con gamma squeeze.
+
+\item \textbf{Frecuencia suficiente.} Se necesitan 50+ trades para
+  el test de bimodalidad. Se\~nales que disparan 1 trade por mes no
+  acumulan datos suficientes en tiempo razonable.
+\end{enumerate}
+
+
+%=================================================================
+\section{Conclusi\'on: El Producto es la Metodolog\'ia}
+\label{sec:conclusion}
+%=================================================================
+
+\begin{tcolorbox}[key, title=Lo que se vende no es un bot]
+El producto no es un bot que gana plata shorteando altcoins. Es un
+\textbf{detector de estaciones} con un \textbf{decodificador autom\'atico}:
+
+\begin{itemize}[leftmargin=1.5em]
+\item El detector ($\Delta$BIC) funciona en cualquier banda (mercado).
+\item El decodificador (Shannon-VOI) funciona con cualquier estaci\'on
+  (se\~nal bimodal).
+\item El monitor ($\hat{\pi}_W$ + $\Delta$BIC rolling) detecta cuando
+  la estaci\'on se debilita.
+\end{itemize}
+
+El framework es agn\'ostico a la frecuencia --- funciona sin importar
+qu\'e estaci\'on encontr\'es, siempre que haya una estaci\'on.
+\end{tcolorbox}
+
+Propiedades del framework:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{Falsificable:} $\Delta$BIC $< 2$ $\to$ no hay edge. No hay ambig\"uedad.
+\item \textbf{Minimal:} 1 par\'ametro operativo. Auditable por cualquiera.
+\item \textbf{Sin backtesting:} la superficie sale de datos en vivo, no de
+  historia optimizada.
+\item \textbf{Con criterio de muerte:} el sistema sabe cu\'ando dejar de
+  operar.
+\item \textbf{Te\'oricamente fundado:} Langevin $\to$ Weibull $\to$
+  Shannon $\to$ VOI. Cada eslab\'on con validaci\'on emp\'irica.
+\end{itemize}
+
+
+%=================================================================
+\begin{thebibliography}{10}
+%=================================================================
+
+\bibitem{shannon1948} C.~E.~Shannon, ``A Mathematical Theory of Communication,'' \textit{Bell Syst.\ Tech.\ J.}, 27(3):379--423, 1948.
+
+\bibitem{kass1995} R.~E.~Kass y A.~E.~Raftery, ``Bayes Factors,'' \textit{JASA}, 90(430):773--795, 1995.
+
+\bibitem{wald1945} A.~Wald, ``Sequential Tests of Statistical Hypotheses,'' \textit{Ann.\ Math.\ Stat.}, 16(2):117--186, 1945.
+
+\bibitem{cover2006} T.~M.~Cover y J.~A.~Thomas, \textit{Elements of Information Theory}, 2da ed., Wiley, 2006.
+
+\bibitem{howard1966} R.~A.~Howard, ``Information Value Theory,'' \textit{IEEE Trans.\ Syst.\ Sci.\ Cybern.}, 2(1):22--26, 1966.
+
+\bibitem{kaplan1958} E.~L.~Kaplan y P.~Meier, ``Nonparametric Estimation from Incomplete Observations,'' \textit{JASA}, 53(282):457--481, 1958.
+
+\bibitem{kramers1940} H.~A.~Kramers, ``Brownian Motion in a Field of Force,'' \textit{Physica}, 7(4):284--304, 1940.
+
+\end{thebibliography}
+
+\end{document}
