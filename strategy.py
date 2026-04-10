@@ -1414,8 +1414,10 @@ class StrategyEngine:
             await self._close_trade(state, vtrade, vname, vparams, now,
                                     price, pnl_pct, exit_reason)
 
-            # Rebuild surface from all closed aggressive (v5) trades (background)
-            asyncio.ensure_future(self._rebuild_v5_surface_safe())
+            # NOTE: v5 surface rebuild disabled — too resource-heavy,
+            # risks degrading eval loop performance during open trades.
+            # Use scripts/bootstrap_surface_from_db.py manually if needed.
+            # asyncio.ensure_future(self._rebuild_v5_surface_safe())
 
     async def _rebuild_v5_surface_safe(self):
         """Non-blocking wrapper for v5 surface rebuild."""
