@@ -543,6 +543,13 @@ class BinanceTrader:
             params["symbol"] = symbol.upper()
         return await self._signed_get("/fapi/v1/income", params)
 
+    async def get_order(self, symbol: str, order_id: int) -> dict:
+        """Query a single order by orderId (has accurate avgPrice after fill)."""
+        return await self._signed_get("/fapi/v1/order", {
+            "symbol": symbol.upper(),
+            "orderId": order_id,
+        })
+
     async def get_trade_history(self, symbol: str,
                                  days: int = 7,
                                  limit: int = 500) -> list[dict]:

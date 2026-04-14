@@ -1781,6 +1781,14 @@ class StrategyEngine:
                 except Exception:
                     pass
 
+        # Capture values needed for post-trade reconciliation before reset
+        vtrade_trade_mode = vtrade.trade_mode
+        entry_order_id = vtrade.binance_order_id
+        exit_order_id = result.get("orderId") if result else None
+        funding_collected = vtrade.funding_collected
+        partial_tp_taken = vtrade.partial_tp_taken
+        partial_tp_pnl = vtrade.partial_tp_pnl_usd
+
         # Reset trade state
         vtrade.open_trade_id = None
         vtrade.entry_price = 0.0
@@ -1806,6 +1814,105 @@ class StrategyEngine:
 
         # Grabar snapshot de cierre
         await self.writer.insert_snapshot(state.to_snapshot(now))
+
+        # ── Post-trade reconciliation: correct prices from Binance ──
+        # The immediate order response may not include avgPrice for
+        # copy-trading accounts.  Query the settled order data and
+        # update DB with the real fill prices / fees.
+        if vtrade_trade_mode == "live" and self.trader and entry_order_id:
+            asyncio.ensure_future(
+                self._reconcile_trade_prices(
+                    trade_id, state.symbol, entry_order_id,
+                    exit_order_id, notional, vparams, vname,
+                    funding_collected, partial_tp_taken, partial_tp_pnl,
+                )
+            )
+
+    async def _reconcile_trade_prices(
+        self, trade_id: int, symbol: str,
+        entry_order_id: int, exit_order_id: Optional[int],
+        notional: float, vparams: dict, vname: str,
+        funding_collected: float, partial_tp_taken: bool,
+        partial_tp_pnl: float,
+    ):
+        """Query Binance for settled order data and correct DB prices/PnL.
+
+        Runs as a fire-and-forget task after the trade is already closed and
+        recorded, so it adds zero latency to the critical path.
+        """
+        try:
+            # Small delay to let Binance settle the order data
+            await asyncio.sleep(2)
+
+            real_entry_price = None
+            real_exit_price = None
+            entry_fee = 0.0
+            exit_fee = 0.0
+
+            # ── Query entry order ──
+            try:
+                entry_ord = await self.trader.get_order(symbol, entry_order_id)
+                avg = entry_ord.get("avgPrice", "0")
+                if avg and float(avg) > 0:
+                    real_entry_price = float(avg)
+                cum = float(entry_ord.get("cumQuote", 0))
+                if cum > 0:
+                    # Fee = taker_rate * cumQuote (notional traded)
+                    entry_fee = 0.0005 * cum
+            except Exception as e:
+                log.warning(f"♻️ Reconcile #{trade_id}: entry order query failed: {e}")
+
+            # ── Query exit order ──
+            if exit_order_id:
+                try:
+                    exit_ord = await self.trader.get_order(symbol, exit_order_id)
+                    avg = exit_ord.get("avgPrice", "0")
+                    if avg and float(avg) > 0:
+                        real_exit_price = float(avg)
+                    cum = float(exit_ord.get("cumQuote", 0))
+                    if cum > 0:
+                        exit_fee = 0.0005 * cum
+                except Exception as e:
+                    log.warning(f"♻️ Reconcile #{trade_id}: exit order query failed: {e}")
+
+            if real_entry_price is None and real_exit_price is None:
+                return  # nothing to fix
+
+            # ── Recalculate PnL with real prices ──
+            ep = real_entry_price or 0
+            xp = real_exit_price or 0
+            if ep > 0 and xp > 0:
+                pnl_pct = (ep - xp) / ep  # short
+            elif ep > 0:
+                # Only entry corrected — can't recalc properly, skip
+                return
+            else:
+                return
+
+            fees = entry_fee + exit_fee
+            pnl_leveraged = pnl_pct * vparams["leverage"]
+            pnl_usd = pnl_pct * notional + funding_collected - fees
+            if partial_tp_taken:
+                pnl_usd += partial_tp_pnl
+
+            # ── Update DB ──
+            async with self.writer._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE virtual_trades SET "
+                    "entry_price=$1, exit_price=$2, "
+                    "pnl_pct=$3, pnl_leveraged=$4, pnl_usd=$5, fees_paid=$6 "
+                    "WHERE id=$7",
+                    ep, xp, pnl_pct, pnl_leveraged, pnl_usd, fees, trade_id,
+                )
+
+            log.info(
+                f"♻️ [{vname.upper()}] Reconciled #{trade_id} {symbol} | "
+                f"entry {ep:.6f} exit {xp:.6f} | "
+                f"PnL ${pnl_usd:+.4f} fees ${fees:.4f}"
+            )
+
+        except Exception as e:
+            log.warning(f"♻️ Reconcile #{trade_id} failed: {e}")
 
     # ══════════════════════════════════════════════════════════════
     #  Restaurar trades abiertos tras reinicio
