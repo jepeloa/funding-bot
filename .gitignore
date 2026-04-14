@@ -18,6 +18,13 @@ venv/
 *.csv
 strategy_status.json
 
+# ── LaTeX build artifacts ──
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
 # ── Editor / IDE ──
 *.swp
 *.swo

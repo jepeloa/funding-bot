@@ -1758,11 +1758,13 @@ async def v5_data():
 
 
 def _build_path_from_candles(entry_price: float, entry_ts: float,
-                              exit_ts: float, candles: list) -> list:
+                              exit_ts: float, candles: list,
+                              extend_secs: int = 0) -> list:
     """Build [secs, pnl, mfe, mae] path from 1-minute OHLCV candles.
 
     Each candle expands into up to 4 price points (O, H, L, C) to capture
     the intra-candle extremes for accurate MFE/MAE tracking.
+    If extend_secs > 0, the path continues beyond exit_ts for that many seconds.
     """
     if not candles:
         return []
@@ -1794,9 +1796,10 @@ def _build_path_from_candles(entry_price: float, entry_ts: float,
     mae = 0.0
     last_emit_sec = -999
     duration = int(exit_ts - entry_ts)
+    max_sec = duration + extend_secs + 60
 
     for sec, price in samples:
-        if sec < 0 or sec > duration + 60:
+        if sec < 0 or sec > max_sec:
             continue
         pnl = (entry_price - price) / entry_price  # short
         if pnl > mfe:
@@ -1808,6 +1811,10 @@ def _build_path_from_candles(entry_price: float, entry_ts: float,
             path.append([sec, round(pnl, 6), round(mfe, 6), round(mae, 6)])
             last_emit_sec = sec
 
+    # Mark the exact exit point so the frontend can draw a vertical line
+    if extend_secs > 0 and path:
+        path.append([duration, None, None, None])  # sentinel
+
     return path
 
 
@@ -1817,6 +1824,7 @@ async def vtrades_paths(
     symbol: Optional[str] = Query(None),
     version: Optional[str] = Query(None, description="Comma-separated strategy versions, e.g. v2,v3,v4"),
     limit: int = Query(100, ge=1, le=500),
+    extend_hours: float = Query(0, ge=0, le=24, description="Hours of price data to include after trade exit"),
 ):
     """Closed trades with reconstructed price path from ohlcv_1m aggregate."""
     clauses = ["status = 'closed'"]
@@ -1860,8 +1868,11 @@ async def vtrades_paths(
     # ── Fetch candles per-trade with bounded concurrency ──
     sem = asyncio.Semaphore(8)
 
+    extend_secs = int(extend_hours * 3600)
+
     async def _fetch_one(t, entry_ts, exit_ts):
         entry_price = float(t["entry_price"])
+        end_ts = exit_ts + extend_secs
         async with sem:
             async with pool.acquire() as c:
                 rows = await c.fetch(
@@ -1870,11 +1881,12 @@ async def vtrades_paths(
                     "AND bucket >= to_timestamp($2) - interval '1 minute' "
                     "AND bucket <= to_timestamp($3) + interval '1 minute' "
                     "ORDER BY bucket",
-                    t["symbol"], entry_ts, exit_ts,
+                    t["symbol"], entry_ts, end_ts,
                 )
         candles = [(r["bucket"], r["open"], r["high"], r["low"], r["close"])
                    for r in rows]
-        path = _build_path_from_candles(entry_price, entry_ts, exit_ts, candles)
+        path = _build_path_from_candles(entry_price, entry_ts, exit_ts, candles,
+                                        extend_secs=extend_secs)
         return {
             "trade_id": t["id"],
             "symbol": t["symbol"],

@@ -1270,7 +1270,7 @@ document.getElementById('btnDownloadPaths').addEventListener('click', async () =
   btn.textContent = '⏳ Loading…';
   try {
     const variant = document.getElementById('variantSelect').value || currentActiveVariant;
-    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(variant) + '&version=v2,v3,v4,v5&limit=500', { headers });
+    const r = await fetch('/vtrades/paths?variant=' + encodeURIComponent(variant) + '&version=v2,v3,v4,v5&limit=500&extend_hours=4', { headers });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const json = await r.json();
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
