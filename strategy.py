@@ -1854,9 +1854,13 @@ class StrategyEngine:
                         # Detectar si partial TP ya fue tomado:
                         # Si la posición actual es menor que la esperada por el notional,
                         # es que ya se cerró una fracción.
+                        # SKIP for base: base never executes partial TP, so any
+                        # qty difference is just Binance rounding.  Detecting a
+                        # false partial TP here would reduce entry_notional by
+                        # ~33 %, corrupting PnL for winning trades.
                         vparams = VARIANTS.get(variant, {})
                         expected_notional = t.get("position_size", 0.0) or 0.0
-                        if expected_notional > 0 and vtrade.entry_price > 0:
+                        if variant != "base" and expected_notional > 0 and vtrade.entry_price > 0:
                             expected_qty = expected_notional / vtrade.entry_price
                             pt_frac = vparams.get("partial_tp_fraction", 0)
                             if pt_frac > 0 and vtrade.live_qty < expected_qty * (1 - pt_frac / 2):

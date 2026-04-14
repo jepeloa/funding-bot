@@ -156,7 +156,7 @@ VARIANTS = {
         "entry_exhaustion_min": 3,      # was 2
         "capital_fraction": 0.05,
         "leverage": 5,
-        "stop_loss_pct": 0.035,         # 3.5% (MAX scheme: tighter SL, was 5%)
+        "stop_loss_pct": 0.05,          # 5% — must match base simplified exit hardcoded SL
         "take_profit_pct": 0.15,        # 15%
         "max_hold_hours": 48,           # 48h
         "min_hold_hours": 4,            # was 1h

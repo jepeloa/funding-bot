@@ -317,21 +317,20 @@ class BinanceTrader:
             )
             filled_qty = qty
             result["executedQty"] = str(qty)
-            # Try to get the real filled qty from positionRisk
+            # Log the full position for debugging, but do NOT override
+            # filled_qty with the total exchange position — that would
+            # include qty from other trades/copiers.
             try:
                 positions = await self.get_positions(sym)
                 if positions:
                     pos_qty = abs(positions[0]["position_amt"])
-                    if pos_qty > 0:
-                        filled_qty = pos_qty
-                        result["executedQty"] = str(pos_qty)
-                        log.info(
-                            f"[{self.account_name}] Reconciled qty from "
-                            f"position: {pos_qty}"
-                        )
+                    log.info(
+                        f"[{self.account_name}] Total exchange position "
+                        f"for {sym}: {pos_qty} (requested: {qty})"
+                    )
             except Exception as e:
                 log.warning(
-                    f"[{self.account_name}] Could not reconcile qty: {e}"
+                    f"[{self.account_name}] Could not query position: {e}"
                 )
 
         if (take_profit or stop_loss) and fill_status == "FILLED" and filled_qty > 0:
